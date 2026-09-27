@@ -8,7 +8,9 @@ import { getSettings } from '../settings'
 import { getBinaries } from '../media/inspect'
 import { runProcess } from '../media/ffmpeg'
 import { generateThumbnail } from '../media/thumbnails'
-import { buildRenderPlan, pickEncoder, probeEncoders, type RenderPlan } from './plan'
+import { buildRenderPlan, encoderMode, pickEncoder, probeEncoders, type RenderPlan } from './plan'
+import { estimateRenderSizeMb, getQualityPreset, resolutionFor } from '@shared/constants'
+import { keptSegments, keptDuration } from '@shared/video/segments'
 
 /**
  * Render queue: persisted jobs, streaming progress, cancellation, retry,
@@ -24,7 +26,7 @@ interface RunningJob {
 export class RenderQueue {
   private running = new Map<string, RunningJob>()
   private waitQueue: string[] = []
-  private encoderCache: { encoder: string; encoders: string[] } | null = null
+  private encoderCache: { mode: string; encoder: string; encoders: string[] } | null = null
 
   constructor(private ctx: AppContext) {}
 
@@ -33,7 +35,7 @@ export class RenderQueue {
     return Math.min(4, Math.max(1, settings.advanced.renderConcurrency))
   }
 
-  async queueRender(clipId: string): Promise<string> {
+  async queueRender(clipId: string, preview = false): Promise<string> {
     const clip = clipsRepo.get(this.ctx.db, clipId)
     if (!clip) throw new AppError('CLIP_NOT_FOUND', 'That clip no longer exists.')
     const project = projectsRepo.get(this.ctx.db, clip.projectId)
@@ -41,18 +43,40 @@ export class RenderQueue {
       throw new AppError('SOURCE_MISSING', 'This project has no imported media.', 'Import a video before rendering.')
     }
 
+    // Disk-space pre-check (§73): estimate the output size (×2.5 safety for
+    // intermediate files) and refuse early rather than failing mid-render.
+    const kept = keptSegments(clip.startTime, clip.endTime, clip.silenceCuts ?? [])
+    const seconds = Math.max(0.5, keptDuration(kept))
+    const tier = preview ? '720p' : clip.outputResolution
+    const quality = preview ? 'draft' : clip.outputQuality
+    const estimateMb = estimateRenderSizeMb(clip.aspectRatio, tier as '720p', quality, seconds)
+    const free = freeDiskBytes(this.ctx.workspaceRoot)
+    if (free !== null && free < estimateMb * 2.5 * 1024 * 1024) {
+      throw new AppError(
+        'DISK_FULL',
+        `Not enough disk space to render (about ${estimateMb} MB needed, ${(free / (1024 * 1024)).toFixed(0)} MB free).`,
+        'Free up space on the drive holding the workspace and try again.'
+      )
+    }
+
     const renderId = crypto.randomUUID()
     const settings = getSettings(this.ctx)
+    const { w, h } = resolutionFor(clip.aspectRatio, tier as '720p')
     rendersRepo.create(this.ctx.db, renderId, clipId, clip.projectId, {
       aspectRatio: clip.aspectRatio,
       cropMode: clip.cropMode,
       captionStyleId: clip.captionStyleId,
-      crf: settings.video.crf,
-      preset: settings.video.renderPreset,
+      resolution: tier,
+      quality,
+      fps: clip.outputFps,
+      crf: getQualityPreset(quality).crf,
+      preset: getQualityPreset(quality).x264Preset,
       startTime: clip.startTime,
-      endTime: clip.endTime
-    })
-    tasksRepo.create(this.ctx.db, { id: renderId, type: 'render', projectId: clip.projectId, payload: { clipId } })
+      endTime: clip.endTime,
+      silenceCuts: clip.silenceCuts?.length ?? 0,
+      hardwareEncoding: encoderMode(settings)
+    }, preview)
+    tasksRepo.create(this.ctx.db, { id: renderId, type: 'render', projectId: clip.projectId, payload: { clipId, preview } })
 
     this.waitQueue.push(renderId)
     this.pump()
@@ -160,22 +184,31 @@ export class RenderQueue {
       this.publish({ ...render, status: 'preparing' })
 
       const settings = getSettings(ctx)
-      const { ffmpeg } = await getBinaries(ctx)
+      const { ffmpeg, ffprobe } = await getBinaries(ctx)
       setStage('preparing')
-      if (!this.encoderCache) {
+      const mode = encoderMode(settings)
+      if (!this.encoderCache || this.encoderCache.mode !== mode) {
         let encoders: string[] = []
         try {
           encoders = await probeEncoders(ffmpeg.path, (bin, args) => runProcess(bin, args, { timeoutMs: 15000 }))
         } catch {
           encoders = []
         }
-        this.encoderCache = { encoder: pickEncoder(settings, encoders), encoders }
+        this.encoderCache = { mode, encoder: pickEncoder(settings, encoders), encoders }
       }
-      let encoder = this.encoderCache.encoder
+      const encoder = this.encoderCache.encoder
+      if (mode === 'hardware' && encoder === 'libx264') {
+        throw new AppError(
+          'HW_ENCODER_UNAVAILABLE',
+          'Hardware encoding is enabled but no hardware encoder was found on this system.',
+          'Switch Settings → Video → Encoder to "Auto" or "CPU" and render again.',
+          this.encoderCache.encoders.filter((e) => e.includes('h264')).slice(0, 12).join(', ')
+        )
+      }
 
       let plan: RenderPlan
       try {
-        plan = buildRenderPlan(ctx, { renderId, clip, project, settings, ffmpegPath: ffmpeg.path, encoder })
+        plan = buildRenderPlan(ctx, { renderId, clip, project, settings, ffmpegPath: ffmpeg.path, encoder, preview: render.preview })
       } catch (err) {
         if (err instanceof AppError && err.code === 'SOURCE_MISSING') throw err
         throw new AppError('RENDER_PLAN_FAILED', 'The render could not be prepared.', undefined, String(err))
@@ -234,6 +267,13 @@ export class RenderQueue {
       if (fs.existsSync(plan.finalPath)) fs.unlinkSync(plan.finalPath)
       fs.renameSync(plan.tmpPath, plan.finalPath)
 
+      // Output validation (§77-78): ffprobe the finalized file and verify
+      // geometry, duration and frame rate. A silent bad output is worse than
+      // a loud failure — corrupt files are never reported as success.
+      setStage('validating')
+      rendersRepo.update(ctx.db, renderId, { stage: 'validating' })
+      await validateRenderOutput(ffprobe.path, plan)
+
       // Clip thumbnail from the rendered file
       try {
         await generateThumbnail(ffmpeg.path, plan.finalPath, path.join(ctx.projectDir(clip.projectId), 'thumbnails', `clip-${clip.id}.jpg`), { at: 0.5, height: 640 })
@@ -267,9 +307,10 @@ export class RenderQueue {
       // If the hardware encoder path failed, offer (and attempt) CPU fallback
       const render = rendersRepo.get(ctx.db, renderId)
       const usedHw = this.encoderCache && this.encoderCache.encoder !== 'libx264'
-      if (usedHw && !cancelled && render) {
+      const fallbackAllowed = this.encoderCache ? this.encoderCache.mode === 'auto' : true
+      if (usedHw && fallbackAllowed && !cancelled && render) {
         ctx.logger.warn('render', 'hw.fallback', `hardware encoder failed, retrying with CPU (${structured.code})`)
-        this.encoderCache = { encoder: 'libx264', encoders: [] }
+        this.encoderCache = { mode: 'auto', encoder: 'libx264', encoders: [] }
         rendersRepo.update(ctx.db, renderId, { status: 'queued', progress: 0, stage: null, error: null })
         this.waitQueue.push(renderId)
       } else {
@@ -328,4 +369,92 @@ function mapFfmpegFailure(code: number, stderr: string, stage: string, plan: Ren
     'Check the technical details below. Common causes: unsupported codec, missing font, insufficient disk space.',
     tail
   )
+}
+
+/** Best-effort free-space probe for the drive holding `dirPath`. */
+export function freeDiskBytes(dirPath: string): number | null {
+  try {
+    const statfs = (fs as unknown as { statfsSync?: (p: string) => { bsize: number; bavail: number } }).statfsSync
+    if (typeof statfs === 'function') {
+      const s = statfs(dirPath)
+      return s.bsize * s.bavail
+    }
+  } catch {
+    /* unavailable or unsupported — skip the check */
+  }
+  return null
+}
+
+interface ProbeStream {
+  codec_type?: string
+  width?: number
+  height?: number
+  avg_frame_rate?: string
+}
+
+/**
+ * Verify the rendered file with FFprobe: video stream present, exact target
+ * dimensions (±2px), duration within ±1.5s, and frame rate near the plan.
+ * Deletes the bad output so it can never be mistaken for a good render.
+ */
+async function validateRenderOutput(ffprobePath: string, plan: RenderPlan): Promise<void> {
+  const res = await runProcess(
+    ffprobePath,
+    ['-v', 'error', '-show_entries', 'stream=codec_type,width,height,avg_frame_rate', '-show_entries', 'format=duration', '-of', 'json', plan.finalPath],
+    { timeoutMs: 30_000 }
+  )
+  if (res.code !== 0) {
+    safeUnlink(plan.finalPath)
+    throw new AppError(
+      'RENDER_VALIDATION_FAILED',
+      'The rendered file could not be verified.',
+      'FFprobe could not read the output. Retry the render; if it keeps failing, check the logs.',
+      res.stderr.slice(-1500)
+    )
+  }
+  let parsed: { streams?: ProbeStream[]; format?: { duration?: string } }
+  try {
+    parsed = JSON.parse(res.stdout)
+  } catch {
+    safeUnlink(plan.finalPath)
+    throw new AppError('RENDER_VALIDATION_FAILED', 'The render verification returned unreadable data.', 'Retry the render.')
+  }
+  const video = (parsed.streams ?? []).find((s) => s.codec_type === 'video')
+  const problems: string[] = []
+  if (!video) problems.push('no video stream found')
+  else {
+    if (video.width == null || video.height == null) problems.push('missing dimensions')
+    else if (Math.abs(video.width - plan.target.w) > 2 || Math.abs(video.height - plan.target.h) > 2) {
+      problems.push(`dimensions ${video.width}x${video.height} but expected ${plan.target.w}x${plan.target.h}`)
+    }
+    const fr = video.avg_frame_rate
+    if (fr && fr !== '0/0') {
+      const [num, den] = fr.split('/').map(Number)
+      if (den > 0 && Math.abs(num / den - plan.fps) > 1.5) {
+        problems.push(`frame rate ${(num / den).toFixed(2)} but expected ${plan.fps}`)
+      }
+    }
+  }
+  const dur = parseFloat(parsed.format?.duration ?? '')
+  if (!Number.isFinite(dur)) problems.push('no duration reported')
+  else if (Math.abs(dur - plan.expectedDuration) > 1.5) {
+    problems.push(`duration ${dur.toFixed(2)}s but expected ${plan.expectedDuration.toFixed(2)}s`)
+  }
+  if (problems.length > 0) {
+    safeUnlink(plan.finalPath)
+    throw new AppError(
+      'RENDER_VALIDATION_FAILED',
+      `The rendered file failed verification: ${problems.join('; ')}.`,
+      'The file was discarded. Retry the render — if the problem repeats, reduce the output resolution or check the source file.',
+      problems.join('; ')
+    )
+  }
+}
+
+function safeUnlink(p: string): void {
+  try {
+    if (fs.existsSync(p)) fs.unlinkSync(p)
+  } catch {
+    /* best effort */
+  }
 }

@@ -75,8 +75,13 @@ async function main(): Promise<void> {
   // ------------------------------------------------- media with ranges ---
   const MIME: Record<string, string> = {
     '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.mov': 'video/quicktime',
-    '.mkv': 'video/x-matroska', '.webm': 'video/webm', '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg', '.png': 'image/png', '.ttf': 'font/ttf'
+    '.mkv': 'video/x-matroska', '.webm': 'video/webm', '.avi': 'video/x-msvideo',
+    '.wmv': 'video/x-ms-wmv', '.flv': 'video/x-flv', '.ts': 'video/mp2t',
+    '.mpg': 'video/mpeg', '.mpeg': 'video/mpeg',
+    '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.aac': 'audio/aac',
+    '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.oga': 'audio/ogg',
+    '.opus': 'audio/ogg', '.flac': 'audio/flac',
+    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.ttf': 'font/ttf'
   }
 
   function isInsideWorkspace(target: string): boolean {
@@ -92,10 +97,16 @@ async function main(): Promise<void> {
   }
 
   app.get('/api/media/stream', (req, res) => {
-    const target = req.query.path
+    let target = req.query.path
     if (typeof target !== 'string' || !isInsideWorkspace(target) || !fs.existsSync(target)) {
       res.status(404).send('Not found')
       return
+    }
+    // ?proxy=1 serves the transcoded preview copy when present (parity with
+    // the Electron media protocol).
+    if (req.query.proxy === '1') {
+      const proxy = path.join(path.dirname(target), 'proxy.mp4')
+      if (fs.existsSync(proxy) && fs.statSync(proxy).isFile()) target = proxy
     }
     const stat = fs.statSync(target)
     if (!stat.isFile()) {

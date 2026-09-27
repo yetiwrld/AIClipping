@@ -155,12 +155,23 @@ export interface AnalysisSummary {
 export type CropMode = 'center' | 'top' | 'bottom' | 'manual'
 export type AspectRatioId = '9:16' | '1:1' | '4:5' | '16:9'
 
+export type OutputResolutionId = '720p' | '1080p' | '1440p' | '2160p'
+export type OutputQualityId = 'draft' | 'standard' | 'high' | 'maximum'
+export type OutputFps = 'source' | 24 | 25 | 30 | 50 | 60
+
 export interface CaptionOverrides {
   fontSizePct?: number
   positionY?: number
   emphasis?: boolean
   uppercase?: boolean
   maxWordsPerCue?: number
+  /** Optional color customizations — applied on top of the template. */
+  textColor?: string
+  highlightColor?: string
+  /** 0..1; overrides the template's box opacity (0 disables the box). */
+  boxOpacity?: number
+  outlineWidth?: number
+  shadow?: number
 }
 
 export interface Clip {
@@ -176,6 +187,20 @@ export interface Clip {
   captionStyleId: string
   captionOverrides: CaptionOverrides
   captionTextEdits: Record<string, string>
+  /** Split cue (by key) after N words. */
+  captionCueSplits: Record<string, number>
+  /** Merge cue (by key) with the following cue. */
+  captionCueMerges: Record<string, boolean>
+  /** Per-cue timing shift in seconds (±5s max). */
+  captionTimingOffsets: Record<string, number>
+  /** Removed silence intervals in SOURCE time — never modified in place. */
+  silenceCuts: Array<{ start: number; end: number }>
+  /** Output resolution tier (short side). */
+  outputResolution: OutputResolutionId
+  /** Encoder quality tier. */
+  outputQuality: OutputQualityId
+  /** Output frame rate; 'source' preserves the input fps. */
+  outputFps: OutputFps
   title: string
   description: string
   hashtags: string[]
@@ -204,6 +229,8 @@ export interface RenderJob {
   outputPath: string | null
   status: RenderStatus
   progress: number
+  /** True for fast low-quality preview renders (draft/720p). */
+  preview: boolean
   stage: string | null
   error: StructuredError | null
   startedAt: string | null
@@ -214,7 +241,7 @@ export interface RenderJob {
 
 // ---------------------------------------------------------------- tasks ----
 
-export type TaskType = 'download' | 'transcribe' | 'analyze' | 'render' | 'thumbnail'
+export type TaskType = 'download' | 'transcribe' | 'analyze' | 'render' | 'thumbnail' | 'proxy'
 export type TaskState = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
 
 export interface TaskInfo {
@@ -280,6 +307,15 @@ export interface VideoSettings {
   crf: number
   useHardwareEncoder: boolean
   audioNormalize: boolean
+  defaultResolution: OutputResolutionId
+  defaultQuality: OutputQualityId
+  hardwareEncoding: 'auto' | 'cpu' | 'hardware'
+  silence: {
+    mode: 'off' | 'auto' | 'aggressive' | 'custom'
+    minSilenceMs: number
+    paddingMs: number
+    maxCutSec: number
+  }
 }
 
 export interface CaptionDefaultsSettings {

@@ -33,6 +33,12 @@ export interface AssBuildOptions {
   uppercase?: boolean
   playResX?: number
   playResY?: number
+  /** Style overrides from clip.captionOverrides (§26 preview/render parity). */
+  textColor?: string
+  highlightColor?: string
+  boxOpacity?: number
+  outlineWidth?: number
+  shadow?: number
 }
 
 function fontNameFor(file: string): string {
@@ -74,16 +80,27 @@ export function buildAssDocument(cues: CaptionCue[], opts: AssBuildOptions): str
   const posY = Math.round((opts.positionY ?? style.positionY) * H)
   const fontFamily = fontNameFor(style.fontFile)
 
+  // User overrides (clip-level) win over the template defaults.
+  const textColor = opts.textColor ?? style.textColor
+  const highlightColor = opts.highlightColor ?? style.highlightColor
+  const boxOpacity = opts.boxOpacity !== undefined ? opts.boxOpacity : style.boxOpacity
+  const outlineWidthOverride = opts.outlineWidth
+  const shadowOverride = opts.shadow
+
   // Karaoke fill paints from Secondary → Primary, so with emphasis the
   // primary colour is the highlight; without emphasis both are plain text.
-  const primary = hexToAss(emphasis ? style.highlightColor : style.textColor, 1)
-  const secondary = hexToAss(style.textColor, 1)
+  const primary = hexToAss(emphasis ? highlightColor : textColor, 1)
+  const secondary = hexToAss(textColor, 1)
   const outlineCol = hexToAss(style.outlineColor, 1)
-  const useBox = style.boxOpacity > 0
-  const back = hexToAss(style.boxColor, useBox ? style.boxOpacity : 0)
+  const useBox = boxOpacity > 0
+  const back = hexToAss(style.boxColor, useBox ? boxOpacity : 0)
   const borderStyle = useBox ? 3 : 1
-  const outlineW = useBox ? Math.max(6, fontSize * 0.18) : Math.max(1, style.outlineWidth * (fontSize / 70))
-  const shadow = Math.max(0, style.shadow * (fontSize / 70))
+  const templateOutline = outlineWidthOverride !== undefined
+    ? outlineWidthOverride
+    : style.outlineWidth
+  const outlineW = useBox ? Math.max(6, fontSize * 0.18) : Math.max(1, templateOutline * (fontSize / 70))
+  const templateShadow = shadowOverride !== undefined ? shadowOverride : style.shadow
+  const shadow = Math.max(0, templateShadow * (fontSize / 70))
 
   const header = [
     '[Script Info]',

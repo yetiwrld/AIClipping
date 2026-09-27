@@ -277,8 +277,10 @@ interface ClipRow {
   id: string; candidate_id: string | null; project_id: string; start_time: number
   end_time: number; aspect_ratio: string; crop_mode: string; crop_x: number
   zoom: number; caption_style_id: string; caption_overrides: string
-  caption_text_edits: string; title: string; description: string; hashtags: string
+  caption_text_edits: string; caption_cue_splits: string; caption_cue_merges: string
+  caption_timing_offsets: string; silence_cuts: string; title: string; description: string; hashtags: string
   cta: string; metadata_provider: string | null; status: string
+  output_resolution: string; output_quality: string; output_fps: string
   created_at: string; updated_at: string
 }
 
@@ -296,6 +298,13 @@ function mapClip(row: ClipRow): Clip {
     captionStyleId: row.caption_style_id,
     captionOverrides: parseJson<Clip['captionOverrides']>(row.caption_overrides, {}),
     captionTextEdits: parseJson<Record<string, string>>(row.caption_text_edits, {}),
+    captionCueSplits: parseJson<Record<string, number>>(row.caption_cue_splits, {}),
+    captionCueMerges: parseJson<Record<string, boolean>>(row.caption_cue_merges, {}),
+    captionTimingOffsets: parseJson<Record<string, number>>(row.caption_timing_offsets, {}),
+    silenceCuts: parseJson<Clip['silenceCuts']>(row.silence_cuts, []),
+    outputResolution: row.output_resolution as Clip['outputResolution'],
+    outputQuality: row.output_quality as Clip['outputQuality'],
+    outputFps: (row.output_fps === 'source' ? 'source' : Number(row.output_fps)) as Clip['outputFps'],
     title: row.title,
     description: row.description,
     hashtags: parseJson<string[]>(row.hashtags, []),
@@ -312,13 +321,18 @@ export const clipsRepo = {
     const ts = now()
     db.run(
       `INSERT INTO clips (id, candidate_id, project_id, start_time, end_time, aspect_ratio, crop_mode,
-        crop_x, zoom, caption_style_id, caption_overrides, caption_text_edits, title, description,
-        hashtags, cta, metadata_provider, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        crop_x, zoom, caption_style_id, caption_overrides, caption_text_edits, caption_cue_splits,
+        caption_cue_merges, caption_timing_offsets, silence_cuts, output_resolution, output_quality,
+        output_fps, title, description, hashtags, cta, metadata_provider, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         clip.id, clip.candidateId, clip.projectId, clip.startTime, clip.endTime,
         clip.aspectRatio, clip.cropMode, clip.cropX, clip.zoom, clip.captionStyleId,
         JSON.stringify(clip.captionOverrides), JSON.stringify(clip.captionTextEdits),
+        JSON.stringify(clip.captionCueSplits ?? {}), JSON.stringify(clip.captionCueMerges ?? {}),
+        JSON.stringify(clip.captionTimingOffsets ?? {}), JSON.stringify(clip.silenceCuts ?? []),
+        clip.outputResolution ?? '1080p', clip.outputQuality ?? 'standard',
+        String(clip.outputFps ?? 'source'),
         clip.title, clip.description, JSON.stringify(clip.hashtags), clip.cta,
         clip.metadataProvider, clip.status, ts, ts
       ]
@@ -341,16 +355,24 @@ export const clipsRepo = {
       cropMode: 'crop_mode', cropX: 'crop_x', zoom: 'zoom',
       captionStyleId: 'caption_style_id', captionOverrides: 'caption_overrides',
       captionTextEdits: 'caption_text_edits', title: 'title', description: 'description',
-      hashtags: 'hashtags', cta: 'cta', metadataProvider: 'metadata_provider', status: 'status'
+      hashtags: 'hashtags', cta: 'cta', metadataProvider: 'metadata_provider', status: 'status',
+      captionCueSplits: 'caption_cue_splits', captionCueMerges: 'caption_cue_merges',
+      captionTimingOffsets: 'caption_timing_offsets', silenceCuts: 'silence_cuts',
+      outputResolution: 'output_resolution', outputQuality: 'output_quality', outputFps: 'output_fps'
     }
+    const CLIP_JSON_FIELDS = new Set([
+      'hashtags', 'captionOverrides', 'captionTextEdits', 'captionCueSplits',
+      'captionCueMerges', 'captionTimingOffsets', 'silenceCuts'
+    ])
     const sets: string[] = []
     const values: unknown[] = []
     for (const [field, column] of Object.entries(columnMap)) {
       if (field in patch) {
         let value = patch[field]
-        if (field === 'hashtags' || field === 'captionOverrides' || field === 'captionTextEdits') {
-          value = JSON.stringify(value ?? (field === 'hashtags' ? [] : {}))
+        if (CLIP_JSON_FIELDS.has(field)) {
+          value = JSON.stringify(value ?? (field === 'hashtags' || field === 'silenceCuts' ? [] : {}))
         }
+        if (field === 'outputFps') value = String(value)
         sets.push(`${column} = ?`)
         values.push(value)
       }
@@ -374,7 +396,7 @@ export const clipsRepo = {
 interface RenderRow {
   id: string; clip_id: string; project_id: string; output_path: string | null
   status: string; progress: number; stage: string | null; error: string | null
-  settings: string; started_at: string | null; completed_at: string | null
+  settings: string; preview: number; started_at: string | null; completed_at: string | null
   created_at: string; updated_at: string
 }
 
@@ -386,6 +408,7 @@ function mapRender(row: RenderRow): RenderJob {
     outputPath: row.output_path,
     status: row.status as RenderStatus,
     progress: row.progress,
+    preview: row.preview === 1,
     stage: row.stage,
     error: parseJson<StructuredError | null>(row.error, null),
     startedAt: row.started_at,
@@ -396,12 +419,12 @@ function mapRender(row: RenderRow): RenderJob {
 }
 
 export const rendersRepo = {
-  create(db: AppDatabase, id: string, clipId: string, projectId: string, settings: unknown): RenderJob {
+  create(db: AppDatabase, id: string, clipId: string, projectId: string, settings: unknown, preview = false): RenderJob {
     const ts = now()
     db.run(
-      `INSERT INTO renders (id, clip_id, project_id, status, settings, created_at, updated_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?)`,
-      [id, clipId, projectId, JSON.stringify(settings ?? {}), ts, ts]
+      `INSERT INTO renders (id, clip_id, project_id, status, settings, preview, created_at, updated_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)`,
+      [id, clipId, projectId, JSON.stringify(settings ?? {}), preview ? 1 : 0, ts, ts]
     )
     return mapRender(db.get<RenderRow>('SELECT * FROM renders WHERE id = ?', [id]) as RenderRow)
   },
@@ -550,7 +573,17 @@ export const settingsRepo = {
         anthropic: { baseUrl: 'https://api.anthropic.com', model: '', temperature: 0.4, maxTokens: 4096, jsonMode: false, supportsAudio: false, authStyle: 'bearer' }
       },
       transcription: { providerId: 'import-file', language: 'auto', whisperModel: 'base', whisperCompute: 'int8' },
-      video: { targetDurationPreset: 'medium', renderPreset: 'veryfast', crf: 18, useHardwareEncoder: false, audioNormalize: true },
+      video: {
+        targetDurationPreset: 'medium',
+        renderPreset: 'veryfast',
+        crf: 18,
+        useHardwareEncoder: false,
+        audioNormalize: true,
+        defaultResolution: '1080p',
+        defaultQuality: 'standard',
+        hardwareEncoding: 'auto',
+        silence: { mode: 'auto', minSilenceMs: 700, paddingMs: 130, maxCutSec: 8 }
+      },
       captions: { defaultStyleId: DEFAULT_CAPTION_STYLE_ID },
       export: { preset: 'generic', includeMetadataFiles: true, filenameTemplate: '{index}_{slug}' },
       advanced: { logLevel: 'info', renderConcurrency: 1, ffmpegPath: '', ffprobePath: '' }

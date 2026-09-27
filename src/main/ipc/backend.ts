@@ -4,6 +4,7 @@ import { AppError } from '@shared/errors'
 import type { AppInfo, ProjectSummary, RenderJob } from '@shared/types'
 import { ipcPayloads } from '@shared/schemas'
 import type { AppContext } from '../services/app-context'
+import { clipsRepo } from '../services/database/repositories'
 import { TaskManager } from '../services/tasks'
 import { RenderQueue } from '../services/rendering/queue'
 import {
@@ -12,6 +13,9 @@ import {
 } from '../services/projects'
 import { getTranscript, importTranscript, runTranscription } from '../services/transcription'
 import { checkUrlProviders } from '../services/media/url-providers'
+import { detectSilence, optionsForMode, projectWithMedia, proxyStatus, renderProxy } from '../services/media/analysis'
+import { buildFilmstrip, buildWaveform, projectForVisuals } from '../services/media/frames'
+import { optimizeClipBoundaries } from '../services/clips/boundaries'
 import { getCandidates, listAnalysisProviders, runAnalysis, updateCandidateStatus } from '../services/ai/analysis'
 import { testAiProvider as testAiProviderService } from '../services/ai/test'
 import { createClipFromCandidate, deleteClip, generateClipMetadata, listClips, updateClip } from '../services/clips'
@@ -71,6 +75,11 @@ function runTask(taskId: string, fn: (report: import('../services/tasks/index').
       signal
     })
   )
+  tasks.registerRunner('proxy', async (payload, report, signal) => {
+    const project = projectWithMedia(ctx, String(payload.projectId))
+    const result = await renderProxy(ctx, project, (pct) => report('transcoding', pct, 'Building preview proxy'), signal)
+    return { proxyPath: result.proxyPath }
+  })
   tasks.registerRunner('download', async (payload, report) => {
     const projectId = String(payload.projectId)
     if (payload.kind === 'url') {
@@ -132,6 +141,27 @@ function runTask(taskId: string, fn: (report: import('../services/tasks/index').
     'media.checkUrl': (p: { url: string }): { ok: boolean; provider: string | null; label: string | null; reason: string | null; hint: string | null } =>
       checkUrlProviders(p.url),
 
+    'media.checkPlayback': (p: { projectId: string }) => proxyStatus(ctx, projectWithMedia(ctx, p.projectId)),
+    'media.renderProxy': (p: { projectId: string }): { taskId: string } => {
+      const project = projectWithMedia(ctx, p.projectId)
+      const status = proxyStatus(ctx, project)
+      if (status.verdict === 'native') {
+        throw new AppError('PROXY_NOT_NEEDED', 'This file already plays directly — no proxy is required.')
+      }
+      const task = tasks.create('proxy', p.projectId, { projectId: p.projectId })
+      runTask(task.id, async (report, signal) => {
+        report('transcoding', 0, 'Building preview proxy')
+        const r = await renderProxy(ctx, project, (pct) => report('transcoding', pct, 'Building preview proxy'), signal)
+        return { proxyPath: r.proxyPath }
+      })
+      return { taskId: task.id }
+    },
+
+    'media.filmstrip': (p: { projectId: string; count?: number }) =>
+      buildFilmstrip(ctx, projectForVisuals(ctx, p.projectId), p.count ?? 24),
+    'media.waveform': (p: { projectId: string; buckets?: number }) =>
+      buildWaveform(ctx, projectForVisuals(ctx, p.projectId), p.buckets ?? 1200),
+
     'media.pickSourceFile': async (): Promise<{ filePath: string | null }> => {
       if (!host) throw new AppError('UNSUPPORTED_IN_PREVIEW', 'File picking is unavailable in the browser preview.', 'Use the upload control instead.')
       return { filePath: await host.pickFile(MEDIA_FILTERS) }
@@ -176,13 +206,31 @@ function runTask(taskId: string, fn: (report: import('../services/tasks/index').
     'analysis.updateCandidate': (p: { id: string; patch: { status?: 'discovered' | 'approved' | 'rejected' | 'converted' } }) =>
       updateCandidateStatus(ctx, p.id, p.patch.status ?? 'discovered'),
 
+    'analysis.detectSilence': async (p: {
+      clipId: string; mode: 'auto' | 'aggressive' | 'custom'
+      minSilenceMs?: number; paddingMs?: number; maxCutSec?: number
+    }) => {
+      const clip = clipsRepo.get(ctx.db, p.clipId)
+      if (!clip) throw new AppError('CLIP_NOT_FOUND', 'That clip no longer exists.')
+      const project = projectWithMedia(ctx, clip.projectId)
+      const opts = optionsForMode(p.mode, {
+        minSilenceMs: p.minSilenceMs, paddingMs: p.paddingMs, maxCutSec: p.maxCutSec
+      })
+      const result = await detectSilence(ctx, project, { from: clip.startTime, to: clip.endTime }, opts)
+      const updated = updateClip(ctx, p.clipId, { silenceCuts: result.cuts })
+      return { ...result, clip: updated }
+    },
+
+    'clips.optimizeBoundaries': (p: { clipId: string }) => optimizeClipBoundaries(ctx, p.clipId),
+
     'clips.list': (p: { projectId: string }) => listClips(ctx, p.projectId),
     'clips.createFromCandidate': (p: { candidateId: string }) => createClipFromCandidate(ctx, p.candidateId),
     'clips.update': (p: { id: string; patch: Record<string, unknown> }) => updateClip(ctx, p.id, p.patch),
     'clips.delete': (p: { id: string }) => deleteClip(ctx, p.id),
     'clips.generateMetadata': (p: { id: string }) => generateClipMetadata(ctx, p.id),
 
-    'renders.queue': async (p: { clipId: string }): Promise<{ renderId: string }> => ({ renderId: await renders.queueRender(p.clipId) }),
+    'renders.queue': async (p: { clipId: string; preview?: boolean }): Promise<{ renderId: string }> =>
+      ({ renderId: await renders.queueRender(p.clipId, p.preview ?? false) }),
     'renders.list': (p: { projectId?: string }): RenderJob[] => renders.list(p.projectId),
     'renders.cancel': async (p: { id: string }) => {
       await renders.cancel(p.id)

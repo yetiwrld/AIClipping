@@ -145,6 +145,20 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value TEXT NOT NULL
 );
 `
+  },
+  {
+    version: 2,
+    name: 'clip output settings, silence cuts, cue edits, render previews',
+    up: `
+ALTER TABLE clips ADD COLUMN caption_cue_splits TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE clips ADD COLUMN caption_cue_merges TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE clips ADD COLUMN caption_timing_offsets TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE clips ADD COLUMN silence_cuts TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE clips ADD COLUMN output_resolution TEXT NOT NULL DEFAULT '1080p';
+ALTER TABLE clips ADD COLUMN output_quality TEXT NOT NULL DEFAULT 'standard';
+ALTER TABLE clips ADD COLUMN output_fps TEXT NOT NULL DEFAULT 'source';
+ALTER TABLE renders ADD COLUMN preview INTEGER NOT NULL DEFAULT 0;
+`
   }
 ]
 

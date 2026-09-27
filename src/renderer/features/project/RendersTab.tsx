@@ -118,7 +118,10 @@ function RenderRow({
   return (
     <div className="queue-row">
       <div style={{ minWidth: 0 }}>
-        <div className="q-title">{clipTitle || 'Clip'}</div>
+        <div className="q-title">
+          {clipTitle || 'Clip'}
+          {render.preview && <span className="tl-badge preview" style={{ marginLeft: 6 }}>preview</span>}
+        </div>
         {projectName && <div className="tiny" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{projectName}</div>}
       </div>
 

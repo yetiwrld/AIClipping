@@ -211,3 +211,34 @@ superficial provider test, weak response validation, Bearer-only auth,
 | Live: direct .mp4 URL import (local HTTP) | project `ready`, 1280×720, source_type=url |
 | Live: YouTube URL pre-flight/import | rejected with exact reason + yt-dlp hint, no task, no leftover project |
 | Live: dependency message | exact interpreter path(s) + exact pip command |
+
+## Session 5 — video-engine overhaul (2026-09-27)
+
+**Environment:** Linux sandbox, Node 20, bundled FFmpeg/FFprobe installers,
+real SQLite workspace. Branch `arena/01a0e298-aiclipping`.
+
+| Check | Result |
+| --- | --- |
+| `npm run typecheck` (node + web) | **PASS** |
+| `npx vitest run` (full suite) | **202/202 PASS** (was 166; +27 unit videoengine, +9 integration videoengine, contracts updated) |
+| Schema migration v2 on live workspace | **PASS** (`context.ready: schema=v2`, old data intact) |
+| Live preview REST: `media.checkPlayback` | **VERIFIED** native verdict for h264/aac; proxy verdict + reason for mpeg4/avi |
+| Live preview REST: `media.renderProxy` | **VERIFIED** real transcode → `source/proxy.mp4` (h264 360p/aac); served with `?proxy=1`, HTTP 200 + 206 range |
+| Live preview REST: `media.filmstrip` | **VERIFIED** 12 real JPG frames from FFmpeg (`fps` filter, cached on 2nd call) |
+| Live preview REST: `media.waveform` | **VERIFIED** 1200 real peaks from FFmpeg s16le decode (max 0.127) |
+| Live preview REST: `analysis.detectSilence` | **VERIFIED** real silencedetect pass; sample.mp4 honestly reports no ≥700 ms gaps; `silence.mp4` fixture (2.5 s gap) detects 3.0→5.5 with 130 ms padding → cut [3.13, 5.37] |
+| Live preview REST: `clips.optimizeBoundaries` | **VERIFIED** honest reasons ("already at a sentence start/end") |
+| Live preview REST: full render | **VERIFIED** 1080×1920 h264+aac, 41.467 s = 44.948 − 3.5 s silence cuts, 13.1 MB, FFprobe-validated |
+| Live preview REST: preview render | **VERIFIED** 720×1280 draft, `preview: true` flag, 41.467 s |
+| Multi-segment render (integration) | **VERIFIED** 3 kept segments via `filter_complex` concat; duration exact within validation window |
+| Output validation failure path | **VERIFIED** missing-source render → `SOURCE_MISSING`, no `.mp4` artifacts kept |
+| Disk-space pre-check | **VERIFIED** statfs probe returns real free bytes |
+
+New fixtures committed: `tests/fixtures/media/silence.mp4` (tone 3 s →
+silence 2.5 s → tone 3 s, 123 KB) and `tests/fixtures/media/incompatible.avi`
+(mpeg4 + mp3, 427 KB — codec Chromium cannot decode).
+
+**Not testable in this sandbox (needs Windows/GUI):** in-browser rendering of
+the new timeline/caption UI (vite build passes; components typecheck),
+hardware encoders (none in the sandbox — Auto mode falls back to libx264,
+Hardware-only mode is expected to fail here by design).

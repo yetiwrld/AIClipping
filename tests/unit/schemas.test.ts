@@ -45,9 +45,12 @@ describe('IPC payload validation (the explicit bridge contract)', () => {
       'projects.list', 'projects.create', 'projects.get', 'projects.rename', 'projects.delete',
       'projects.storage', 'projects.updateSettings',
       'media.importFile', 'media.importUrl', 'media.checkUrl', 'media.pickSourceFile', 'media.pickTranscriptFile',
+      'media.checkPlayback', 'media.renderProxy', 'media.filmstrip', 'media.waveform',
       'transcript.get', 'transcript.start', 'transcript.import',
       'analysis.providers', 'analysis.start', 'analysis.getCandidates', 'analysis.updateCandidate',
+      'analysis.detectSilence',
       'clips.list', 'clips.createFromCandidate', 'clips.update', 'clips.delete', 'clips.generateMetadata',
+      'clips.optimizeBoundaries',
       'renders.queue', 'renders.list', 'renders.cancel', 'renders.retry',
       'tasks.list', 'tasks.cancel', 'tasks.resume', 'tasks.discard',
       'settings.get', 'settings.update', 'settings.setSecret', 'settings.deleteSecret',
@@ -88,12 +91,43 @@ describe('app settings schema', () => {
         anthropic: { baseUrl: '', model: 'claude-sonnet-4-5', temperature: 0.2, maxTokens: 4096, jsonMode: false, supportsAudio: false }
       },
       transcription: { providerId: 'import-file', language: 'auto', whisperModel: 'base', whisperCompute: 'int8' },
-      video: { targetDurationPreset: 'medium', crf: 20, renderPreset: 'veryfast', useHardwareEncoder: true, audioNormalize: true },
+      video: {
+        targetDurationPreset: 'medium', crf: 20, renderPreset: 'veryfast', useHardwareEncoder: true, audioNormalize: true,
+        defaultResolution: '1080p', defaultQuality: 'standard', hardwareEncoding: 'auto',
+        silence: { mode: 'auto', minSilenceMs: 700, paddingMs: 130, maxCutSec: 8 }
+      },
       captions: { defaultStyleId: 'classic' },
       export: { preset: 'tiktok', filenameTemplate: '{index}_{slug}', includeMetadataFiles: true },
       advanced: { ffmpegPath: '', ffprobePath: '', logLevel: 'info', renderConcurrency: 2 }
     })
     expect(parsed.success).toBe(true)
+  })
+
+  it('rejects unknown resolution/quality/silence values', () => {
+    const base = {
+      general: { firstRunCompleted: true },
+      ai: {
+        activeProvider: 'none',
+        openai: { baseUrl: '', model: '', temperature: 0.2, maxTokens: 4096, jsonMode: true, supportsAudio: false },
+        anthropic: { baseUrl: '', model: '', temperature: 0.2, maxTokens: 4096, jsonMode: false, supportsAudio: false }
+      },
+      transcription: { providerId: 'import-file', language: 'auto', whisperModel: 'base', whisperCompute: 'int8' },
+      captions: { defaultStyleId: 'classic' },
+      export: { preset: 'tiktok', filenameTemplate: '{index}_{slug}', includeMetadataFiles: true },
+      advanced: { ffmpegPath: '', ffprobePath: '', logLevel: 'info', renderConcurrency: 2 }
+    }
+    expect(
+      appSettingsSchema.safeParse({
+        ...base,
+        video: { targetDurationPreset: 'medium', crf: 20, renderPreset: 'veryfast', useHardwareEncoder: true, audioNormalize: true, defaultResolution: '480p', defaultQuality: 'standard', hardwareEncoding: 'auto', silence: { mode: 'auto', minSilenceMs: 700, paddingMs: 130, maxCutSec: 8 } }
+      }).success
+    ).toBe(false)
+    expect(
+      appSettingsSchema.safeParse({
+        ...base,
+        video: { targetDurationPreset: 'medium', crf: 20, renderPreset: 'veryfast', useHardwareEncoder: true, audioNormalize: true, defaultResolution: '1080p', defaultQuality: 'ultra', hardwareEncoding: 'auto', silence: { mode: 'auto', minSilenceMs: 700, paddingMs: 130, maxCutSec: 8 } }
+      }).success
+    ).toBe(false)
   })
 
   it('rejects out-of-range values', () => {
@@ -105,7 +139,7 @@ describe('app settings schema', () => {
         anthropic: { baseUrl: '', model: '', temperature: 0.2, maxTokens: 4096, jsonMode: false, supportsAudio: false }
       },
       transcription: { providerId: 'import-file', language: 'auto', whisperModel: 'base', whisperCompute: 'int8' },
-      video: { targetDurationPreset: 'medium', crf: 99, renderPreset: 'veryfast', useHardwareEncoder: true, audioNormalize: true },
+      video: { targetDurationPreset: 'medium', crf: 99, renderPreset: 'veryfast', useHardwareEncoder: true, audioNormalize: true, defaultResolution: '1080p', defaultQuality: 'standard', hardwareEncoding: 'auto', silence: { mode: 'auto', minSilenceMs: 700, paddingMs: 130, maxCutSec: 8 } },
       captions: { defaultStyleId: 'classic' },
       export: { preset: 'tiktok', filenameTemplate: '{index}_{slug}', includeMetadataFiles: true },
       advanced: { ffmpegPath: '', ffprobePath: '', logLevel: 'info', renderConcurrency: 2 }

@@ -58,7 +58,18 @@ export const appSettingsSchema = z.object({
     renderPreset: z.enum(['ultrafast', 'veryfast', 'medium', 'slow']),
     crf: z.number().int().min(0).max(51),
     useHardwareEncoder: z.boolean(),
-    audioNormalize: z.boolean()
+    audioNormalize: z.boolean(),
+    /** Default resolution/quality tiers for new clips. */
+    defaultResolution: z.enum(['720p', '1080p', '1440p', '2160p']),
+    defaultQuality: z.enum(['draft', 'standard', 'high', 'maximum']),
+    /** Encoder selection: auto (hw when available), cpu, or hardware-only. */
+    hardwareEncoding: z.enum(['auto', 'cpu', 'hardware']),
+    silence: z.object({
+      mode: z.enum(['off', 'auto', 'aggressive', 'custom']),
+      minSilenceMs: z.number().int().min(200).max(5000),
+      paddingMs: z.number().int().min(0).max(1000),
+      maxCutSec: z.number().int().min(0).max(30)
+    })
   }),
   captions: z.object({
     defaultStyleId: z.string().max(40)
@@ -159,13 +170,25 @@ export const rawMetadataResponseSchema = z.object({
 
 // ------------------------------------------------------------------ clips
 
+const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'expected a #rrggbb color')
+
 export const captionOverridesSchema = z.object({
   fontSizePct: z.number().min(1.5).max(9).optional(),
   positionY: z.number().min(0.05).max(0.95).optional(),
   emphasis: z.boolean().optional(),
   uppercase: z.boolean().optional(),
-  maxWordsPerCue: z.number().int().min(1).max(10).optional()
+  maxWordsPerCue: z.number().int().min(1).max(10).optional(),
+  textColor: hexColor.optional(),
+  highlightColor: hexColor.optional(),
+  boxOpacity: z.number().min(0).max(1).optional(),
+  outlineWidth: z.number().min(0).max(12).optional(),
+  shadow: z.number().min(0).max(12).optional()
 })
+
+export const silenceRangeSchema = z.object({
+  start: z.number().min(0),
+  end: z.number().min(0)
+}).refine((r) => r.end > r.start, 'end must be after start')
 
 export const clipPatchSchema = z.object({
   startTime: z.number().min(0).optional(),
@@ -177,6 +200,13 @@ export const clipPatchSchema = z.object({
   captionStyleId: z.string().max(40).optional(),
   captionOverrides: captionOverridesSchema.optional(),
   captionTextEdits: z.record(z.string(), z.string()).optional(),
+  captionCueSplits: z.record(z.string(), z.number().int().min(1).max(20)).optional(),
+  captionCueMerges: z.record(z.string(), z.boolean()).optional(),
+  captionTimingOffsets: z.record(z.string(), z.number().min(-5).max(5)).optional(),
+  silenceCuts: z.array(silenceRangeSchema).max(400).optional(),
+  outputResolution: z.enum(['720p', '1080p', '1440p', '2160p']).optional(),
+  outputQuality: z.enum(['draft', 'standard', 'high', 'maximum']).optional(),
+  outputFps: z.enum(['source', '24', '25', '30', '50', '60']).optional(),
   title: z.string().max(200).optional(),
   description: z.string().max(4000).optional(),
   hashtags: z.array(z.string().max(60)).max(20).optional(),
@@ -215,6 +245,14 @@ export const ipcPayloads = {
   'media.checkUrl': z.object({ url: z.string().min(1).max(2000) }).strict(),
   'media.importFile': z.object({ projectId: uuidSchema, filePath: z.string().min(1).max(1000).optional() }).strict(),
   'media.importUrl': z.object({ projectId: uuidSchema, url: z.string().url() }).strict(),
+  'media.checkPlayback': z.object({ projectId: uuidSchema }).strict(),
+  'media.renderProxy': z.object({ projectId: uuidSchema }).strict(),
+  'media.filmstrip': z
+    .object({ projectId: uuidSchema, count: z.number().int().min(6).max(48).default(24) })
+    .strict(),
+  'media.waveform': z
+    .object({ projectId: uuidSchema, buckets: z.number().int().min(10).max(4000).default(1200) })
+    .strict(),
   'media.pickSourceFile': z.object({}).strict(),
   'media.pickTranscriptFile': z.object({}).strict(),
 
@@ -238,6 +276,18 @@ export const ipcPayloads = {
     .strict()
   ,
   'analysis.getCandidates': z.object({ projectId: uuidSchema }).strict(),
+
+  'analysis.detectSilence': z
+    .object({
+      clipId: uuidSchema,
+      mode: z.enum(['auto', 'aggressive', 'custom']).default('auto'),
+      minSilenceMs: z.number().int().min(200).max(5000).optional(),
+      paddingMs: z.number().int().min(0).max(1000).optional(),
+      maxCutSec: z.number().int().min(0).max(30).optional()
+    })
+    .strict(),
+
+  'clips.optimizeBoundaries': z.object({ clipId: uuidSchema }).strict(),
   'analysis.updateCandidate': z
     .object({ id: uuidSchema, patch: candidatePatchSchema })
     .strict(),
@@ -248,7 +298,7 @@ export const ipcPayloads = {
   'clips.delete': z.object({ id: uuidSchema }).strict(),
   'clips.generateMetadata': z.object({ id: uuidSchema }).strict(),
 
-  'renders.queue': z.object({ clipId: uuidSchema }).strict(),
+  'renders.queue': z.object({ clipId: uuidSchema, preview: z.boolean().default(false) }).strict(),
   'renders.list': z.object({ projectId: uuidSchema.optional() }).strict(),
   'renders.cancel': z.object({ id: uuidSchema }).strict(),
   'renders.retry': z.object({ id: uuidSchema }).strict(),

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft, Play, Pause, Volume2, VolumeX, SkipBack, Type, Crop, Tags, Copy,
-  ChevronRight, Scissors, Wand2, Save
+  ChevronRight, Scissors, Wand2, Save, Undo2, Redo2, AlertTriangle, ShieldCheck,
+  Gauge, Film, AudioLines, Eraser, RotateCcw, Zap
 } from 'lucide-react'
 import { api, errMessage, mediaUrl, copyText } from '../../api/client'
 import { useAppStore } from '../../stores/app'
@@ -9,7 +10,11 @@ import { useDataStore } from '../../stores/data'
 import { ErrorBox, Field, Spinner, Switch } from '../../components/ui'
 import { buildCues, cueAt } from '@shared/captions/segmentation'
 import { computeCrop } from '@shared/video/crop'
-import { ASPECT_RATIOS, CAPTION_STYLES, getCaptionStyle, getDurationRange, getPlatformPreset, PLATFORM_PRESETS } from '@shared/constants'
+import { keptSegments, keptDuration } from '@shared/video/segments'
+import {
+  ASPECT_RATIOS, CAPTION_STYLES, RESOLUTION_PRESETS, QUALITY_PRESETS, estimateRenderSizeMb,
+  getCaptionStyle, getDurationRange, getPlatformPreset, PLATFORM_PRESETS, resolutionFor
+} from '@shared/constants'
 import type { CaptionOverrides, Clip, TranscriptSegment } from '@shared/types'
 import { formatClock } from '@shared/utils/time'
 import { Timeline } from './Timeline'
@@ -17,10 +22,22 @@ import { CaptionPreview } from './CaptionPreview'
 
 /**
  * Clip editor — professional workspace layout:
- * top bar (identity + save + render) / stage + inspector / timeline + transport.
- * All state, autosave, shortcuts and crop math unchanged from the validated
- * implementation; only the presentation layer was redesigned.
+ * top bar (identity + undo/redo + render) / stage + inspector / timeline + transport.
+ * Playback has explicit error states with a real FFmpeg proxy workflow (§4-8),
+ * JKL + frame-accurate shortcuts (§9-10), silence-cut preview skipping (§40),
+ * and per-clip output settings (§49-56).
  */
+
+type PlaybackStatus = {
+  verdict: 'native' | 'proxy' | 'audio-only'
+  reason: string
+  proxyExists: boolean
+  proxyPath: string | null
+} | null
+
+const SNAPSHOT_EXCLUDE = new Set(['id', 'projectId', 'candidateId', 'status', 'createdAt', 'updatedAt'])
+type ClipSnapshot = Partial<Clip>
+
 export function EditorPage() {
   const app = useAppStore()
   const data = useDataStore()
@@ -35,12 +52,31 @@ export function EditorPage() {
   const [muted, setMuted] = useState(false)
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'dirty'>('saved')
   const [renderQueued, setRenderQueued] = useState(false)
+  const [previewQueued, setPreviewQueued] = useState(false)
+
+  // playback compatibility + proxy workflow
+  const [playback, setPlayback] = useState<PlaybackStatus>(null)
+  const [videoError, setVideoError] = useState<string | null>(null)
+  const [proxyRunning, setProxyRunning] = useState(false)
+
+  // timeline visuals (real, FFmpeg-generated)
+  const [filmstrip, setFilmstrip] = useState<Array<{ t: number; path: string }> | null>(null)
+  const [waveform, setWaveform] = useState<{ peaks: number[]; duration: number } | null>(null)
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const [stageSize, setStageSize] = useState({ w: 0, h: 0 })
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const loadedRef = useRef<string | null>(null)
+  const clipRef = useRef<Clip | null>(null)
+  const historyRef = useRef<{ past: ClipSnapshot[]; future: ClipSnapshot[]; lastPush: number }>({
+    past: [], future: [], lastPush: 0
+  })
+  const [historyState, setHistoryState] = useState({ canUndo: false, canRedo: false })
+
+  useEffect(() => {
+    clipRef.current = clip
+  }, [clip])
 
   // ---------------------------------------------------------------- load ---
   useEffect(() => {
@@ -61,15 +97,48 @@ export function EditorPage() {
         setClip(found)
         setSegments(transcript)
         setCurrentTime(found.startTime)
+        historyRef.current = { past: [], future: [], lastPush: 0 }
       } catch (err) {
         setError(err)
       }
     })()
+    // Playback compatibility (§4-7): decide direct vs proxy before playback.
+    void api['media.checkPlayback']({ projectId }).then(setPlayback).catch(() => setPlayback(null))
+    // Timeline visuals — real FFmpeg output, loaded in the background.
+    void api['media.filmstrip']({ projectId, count: 24 })
+      .then((r) => setFilmstrip(r.frames))
+      .catch(() => setFilmstrip(null))
+    void api['media.waveform']({ projectId })
+      .then((r) => (r.silent || r.peaks.length === 0 ? setWaveform(null) : setWaveform({ peaks: r.peaks, duration: r.duration })))
+      .catch(() => setWaveform(null))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipId, projectId])
 
   // ------------------------------------------------------------- autosave ---
-  const updateClip = useCallback((patch: Partial<Clip>, immediate = false) => {
+  const snapshotOf = (c: Clip): ClipSnapshot => {
+    const out: Record<string, unknown> = {}
+    for (const key of Object.keys(c) as Array<keyof Clip>) {
+      if (!SNAPSHOT_EXCLUDE.has(key)) out[key] = c[key]
+    }
+    return out as ClipSnapshot
+  }
+
+  const pushHistory = useCallback(() => {
+    const prev = clipRef.current
+    if (!prev) return
+    const h = historyRef.current
+    const now = Date.now()
+    if (now - h.lastPush > 900 || h.past.length === 0) {
+      h.past.push(snapshotOf(prev))
+      if (h.past.length > 50) h.past.shift()
+    }
+    h.future = []
+    h.lastPush = now
+    setHistoryState({ canUndo: h.past.length > 0, canRedo: false })
+  }, [])
+
+  const updateClip = useCallback((patch: Partial<Clip>, immediate = false, history = true) => {
+    if (history) pushHistory()
     setClip((prev) => (prev ? { ...prev, ...patch } : prev))
     setSaveState('dirty')
     if (saveTimer.current) clearTimeout(saveTimer.current)
@@ -94,6 +163,37 @@ export function EditorPage() {
     }
   }
 
+  // ------------------------------------------------------------ undo/redo ---
+  const undo = useCallback(() => {
+    const h = historyRef.current
+    const prevSnap = h.past.pop()
+    const cur = clipRef.current
+    if (!prevSnap || !cur) return
+    h.future.push(snapshotOf(cur))
+    h.lastPush = 0
+    setHistoryState({ canUndo: h.past.length > 0, canRedo: h.future.length > 0 })
+    setClip({ ...cur, ...prevSnap })
+    setSaveState('dirty')
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(() => void saveNow(prevSnap), 300)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const redo = useCallback(() => {
+    const h = historyRef.current
+    const nextSnap = h.future.pop()
+    const cur = clipRef.current
+    if (!nextSnap || !cur) return
+    h.past.push(snapshotOf(cur))
+    h.lastPush = 0
+    setHistoryState({ canUndo: h.past.length > 0, canRedo: h.future.length > 0 })
+    setClip({ ...cur, ...nextSnap })
+    setSaveState('dirty')
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(() => void saveNow(nextSnap), 300)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // ------------------------------------------------------------- playback ---
   useEffect(() => {
     const id = setInterval(() => {
@@ -101,6 +201,8 @@ export function EditorPage() {
     }, 120)
     return () => clearInterval(id)
   }, [])
+
+  const useProxySrc = playback?.verdict === 'proxy' && playback.proxyExists
 
   const togglePlay = useCallback(() => {
     const v = videoRef.current
@@ -116,24 +218,75 @@ export function EditorPage() {
     }
   }, [clip, currentTime])
 
+  /** J = rewind (Chromium can't play backwards; we step back at speed). */
+  const rewind = useCallback(() => {
+    const v = videoRef.current
+    if (!v) return
+    v.pause()
+    const step = 0.34
+    v.currentTime = Math.max(0, v.currentTime - step)
+    setCurrentTime(v.currentTime)
+  }, [])
+
+  /** L = play; repeated presses speed up (1× → 1.5× → 2×). */
+  const playForward = useCallback(() => {
+    const v = videoRef.current
+    if (!v) return
+    if (v.paused) {
+      v.playbackRate = 1
+      void v.play()
+    } else if (v.playbackRate < 2) {
+      v.playbackRate = v.playbackRate === 1 ? 1.5 : 2
+    }
+  }, [])
+
   useEffect(() => {
     const v = videoRef.current
     if (!v) return
     const onPlay = () => setPlaying(true)
-    const onPause = () => setPlaying(false)
+    const onPause = () => {
+      setPlaying(false)
+      v.playbackRate = 1
+    }
+    const onRate = () => {
+      if (v.playbackRate === 1) return
+    }
     v.addEventListener('play', onPlay)
     v.addEventListener('pause', onPause)
+    v.addEventListener('ratechange', onRate)
     return () => {
       v.removeEventListener('play', onPlay)
       v.removeEventListener('pause', onPause)
+      v.removeEventListener('ratechange', onRate)
     }
-  }, [clip])
+  }, [clip, useProxySrc])
 
-  // Preview during playback: loop within the clip range
+  /** Seek that respects silence cuts: landing inside a removed range jumps to
+   *  its start boundary, exactly like the rendered output behaves (§40). */
+  const seekTo = useCallback((t: number) => {
+    const v = videoRef.current
+    const c = clipRef.current
+    if (!v) return
+    let target = t
+    if (c) {
+      const cut = (c.silenceCuts ?? []).find((x) => t > x.start + 0.02 && t < x.end - 0.02)
+      if (cut) target = cut.start
+    }
+    v.currentTime = Math.max(0, target)
+    setCurrentTime(v.currentTime)
+  }, [])
+
+  // Preview during playback: skip removed silence, loop within the clip range.
   useEffect(() => {
     const v = videoRef.current
     if (!v || !clip) return
     const onTime = () => {
+      const cuts = clip.silenceCuts ?? []
+      const inCut = cuts.find((c) => v.currentTime >= c.start && v.currentTime < c.end && c.end <= clip.endTime)
+      if (inCut) {
+        v.currentTime = inCut.end
+        return
+      }
       if (v.currentTime > clip.endTime) {
         if (playing) {
           v.currentTime = clip.startTime
@@ -147,36 +300,62 @@ export function EditorPage() {
   }, [clip, playing])
 
   // ------------------------------------------------------ keyboard shortcuts --
+  const frameStep = useCallback((dir: 1 | -1) => {
+    const v = videoRef.current
+    if (!v) return
+    const fps = data.activeProject?.fps && data.activeProject.fps > 0 ? data.activeProject.fps : 25
+    v.pause()
+    seekTo(v.currentTime + dir / fps)
+  }, [data.activeProject, seekTo])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable) return
       if (!clip) return
       const v = videoRef.current
+      const fps = data.activeProject?.fps && data.activeProject.fps > 0 ? data.activeProject.fps : 25
       if (e.code === 'Space') {
         e.preventDefault()
         togglePlay()
+      } else if (e.key === 'j' || e.key === 'J') {
+        e.preventDefault()
+        rewind()
+      } else if (e.key === 'k' || e.key === 'K') {
+        e.preventDefault()
+        v?.pause()
+      } else if (e.key === 'l' || e.key === 'L') {
+        e.preventDefault()
+        playForward()
+      } else if (e.key === ',') {
+        frameStep(-1)
+      } else if (e.key === '.') {
+        frameStep(1)
       } else if (e.key === 'i' || e.key === 'I') {
-        updateClip({ startTime: Math.min(currentTime, clip.endTime - 0.5) })
+        updateClip({ startTime: Math.min(currentTime, clip.endTime - 1 / fps) })
       } else if (e.key === 'o' || e.key === 'O') {
-        updateClip({ endTime: Math.max(currentTime, clip.startTime + 0.5) })
+        updateClip({ endTime: Math.max(currentTime, clip.startTime + 1 / fps) })
+      } else if (e.key === 'Home') {
+        e.preventDefault()
+        seekTo(clip.startTime)
+      } else if (e.key === 'End') {
+        e.preventDefault()
+        seekTo(clip.endTime - 1 / fps)
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault()
-        if (v) {
-          v.currentTime = Math.max(0, v.currentTime - (e.shiftKey ? 5 : 1))
-          setCurrentTime(v.currentTime)
-        }
+        if (v) seekTo(v.currentTime - (e.shiftKey ? 5 : 1))
       } else if (e.key === 'ArrowRight') {
         e.preventDefault()
-        if (v) {
-          v.currentTime = Math.min(clip ? data.activeProject?.duration ?? v.duration : v.duration, v.currentTime + (e.shiftKey ? 5 : 1))
-          setCurrentTime(v.currentTime)
-        }
+        if (v) seekTo(v.currentTime + (e.shiftKey ? 5 : 1))
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault()
+        if (e.shiftKey) redo()
+        else undo()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [clip, currentTime, togglePlay, updateClip, data.activeProject])
+  }, [clip, currentTime, togglePlay, updateClip, rewind, playForward, frameStep, seekTo, undo, redo, data.activeProject])
 
   // ------------------------------------------------------------- captions ---
   const project = data.activeProject
@@ -188,6 +367,9 @@ export function EditorPage() {
       maxCharsPerLine: style.maxCharsPerLine,
       maxLines: style.maxLines,
       textEdits: clip.captionTextEdits,
+      splits: clip.captionCueSplits,
+      merges: clip.captionCueMerges,
+      timingOffsets: clip.captionTimingOffsets,
       fromTime: clip.startTime,
       toTime: clip.endTime
     })
@@ -195,7 +377,7 @@ export function EditorPage() {
 
   // Mirror of the render plan: crop toward the selected output target so the
   // preview shows exactly what FFmpeg produces (plan.ts buildRenderPlan).
-  const target = clip ? (ASPECT_RATIOS[clip.aspectRatio] ?? ASPECT_RATIOS['9:16']) : ASPECT_RATIOS['9:16']
+  const target = clip ? resolutionFor(clip.aspectRatio, clip.outputResolution) : { w: 1080, h: 1920 }
   const crop = useMemo(() => {
     if (!clip || !project?.width || !project?.height) return null
     return computeCrop(project.width, project.height, target.w, target.h, clip.cropMode, clip.cropX, clip.zoom)
@@ -215,20 +397,56 @@ export function EditorPage() {
     return () => observer.disconnect()
   }, [])
 
+  // --------------------------------------------------------- proxy actions ---
+  async function createProxy() {
+    if (!projectId) return
+    setProxyRunning(true)
+    try {
+      await api['media.renderProxy']({ projectId })
+      // Poll until the proxy file appears (the transcode runs as a task).
+      for (let i = 0; i < 80; i++) {
+        await new Promise((r) => setTimeout(r, 3000))
+        try {
+          const status = await api['media.checkPlayback']({ projectId })
+          setPlayback(status)
+          if (status.proxyExists) {
+            setVideoError(null)
+            app.toast({
+              level: 'success',
+              message: 'Preview proxy ready — playback switched to the proxy copy.',
+              hint: 'Renders still use the original file at full quality.'
+            })
+            return
+          }
+        } catch {
+          /* keep polling */
+        }
+      }
+      app.toast({ level: 'warn', message: 'The proxy is still transcoding. Playback will use it once finished.' })
+    } catch (err) {
+      app.toast({ level: 'error', ...errMessage(err) })
+    } finally {
+      setProxyRunning(false)
+    }
+  }
+
   // ---------------------------------------------------------------- render ---
-  async function queueRender() {
+  async function queueRender(preview: boolean) {
     if (!clip) return
-    setRenderQueued(true)
+    if (preview) setPreviewQueued(true)
+    else setRenderQueued(true)
     try {
       if (saveState !== 'saved') {
         if (saveTimer.current) clearTimeout(saveTimer.current)
         await saveNow(clip as unknown as Partial<Clip>)
       }
-      await api['renders.queue']({ clipId: clip.id })
+      await api['renders.queue']({ clipId: clip.id, preview })
       await data.loadRenders(clip.projectId)
       app.toast({
         level: 'success',
-        message: 'Render queued. Progress appears in the Render queue.',
+        message: preview
+          ? 'Quick preview render queued (720p draft).'
+          : 'Render queued. Progress appears in the Render queue.',
         actionLabel: 'Open queue',
         action: () => app.navigate('queue')
       })
@@ -236,6 +454,7 @@ export function EditorPage() {
       app.toast({ level: 'error', ...errMessage(err) })
     } finally {
       setRenderQueued(false)
+      setPreviewQueued(false)
     }
   }
 
@@ -257,13 +476,15 @@ export function EditorPage() {
 
   const activeCue = cueAt(cues, currentTime)
   const targetRange = getDurationRange(project.settings.durationPreset)
+  const kept = keptSegments(clip.startTime, clip.endTime, clip.silenceCuts ?? [])
+  const outputSeconds = keptDuration(kept)
 
   // Fit the output-ratio frame inside the stage (letterboxed, never distorted).
   const ratio = target.w / target.h
   const frame =
     stageSize.w > 0 && stageSize.h > 0
       ? (() => {
-          let w = Math.min(stageSize.w, stageSize.h * ratio)
+          const w = Math.min(stageSize.w, stageSize.h * ratio)
           return { w, h: w / ratio }
         })()
       : { w: 0, h: 0 }
@@ -285,11 +506,30 @@ export function EditorPage() {
           {saveState === 'saving' && <Spinner size={11} />}
           {saveState === 'saved' ? 'Saved' : saveState === 'saving' ? 'Saving…' : 'Unsaved changes'}
         </span>
+        <button
+          className="btn ghost sm icon"
+          onClick={undo}
+          disabled={!historyState.canUndo}
+          title="Undo (Ctrl+Z)"
+          aria-label="Undo"
+        >
+          <Undo2 size={13} />
+        </button>
+        <button
+          className="btn ghost sm icon"
+          onClick={redo}
+          disabled={!historyState.canRedo}
+          title="Redo (Ctrl+Shift+Z)"
+          aria-label="Redo"
+        >
+          <Redo2 size={13} />
+        </button>
         <span style={{ flex: 1 }} />
         <span className="tiny" style={{ marginRight: 6 }}>
-          <span className="kbd">space</span> play · <span className="kbd">I</span>/<span className="kbd">O</span> trim · <span className="kbd">←</span>/<span className="kbd">→</span> seek
+          <span className="kbd">J</span>/<span className="kbd">K</span>/<span className="kbd">L</span> ·{' '}
+          <span className="kbd">, .</span> frame · <span className="kbd">I</span>/<span className="kbd">O</span> trim
         </span>
-        <button className="btn primary" onClick={() => void queueRender()} disabled={renderQueued}>
+        <button className="btn primary" onClick={() => void queueRender(false)} disabled={renderQueued}>
           {renderQueued ? <Spinner size={12} /> : <Play size={13} />} Render clip
         </button>
       </div>
@@ -300,12 +540,21 @@ export function EditorPage() {
           <div
             className="editor-frame"
             style={{ width: frame.w || undefined, height: frame.h || undefined }}
-            title={`Preview frame: ${target.w}×${target.h} (${clip.aspectRatio})`}
+            title={`Preview frame: ${target.w}×${target.h} (${clip.aspectRatio} @ ${clip.outputResolution})`}
           >
             <video
               ref={videoRef}
-              src={project.sourcePath ? mediaUrl(project.sourcePath) : undefined}
+              key={useProxySrc ? 'proxy' : 'source'}
+              src={project.sourcePath ? mediaUrl(project.sourcePath, { proxy: useProxySrc }) : undefined}
               muted={muted}
+              onError={() => {
+                setVideoError(
+                  playback?.verdict === 'proxy'
+                    ? playback.reason
+                    : 'The video could not be loaded. The file may be missing, or its format is not supported for direct playback.'
+                )
+              }}
+              onLoadedData={() => setVideoError(null)}
               style={
                 crop
                   ? {
@@ -321,6 +570,35 @@ export function EditorPage() {
               preload="metadata"
               playsInline
             />
+            {videoError && (
+              <div className="playback-error">
+                <div>
+                  <AlertTriangle size={26} className="icon-big" />
+                  <h4>Playback problem</h4>
+                  <p>{videoError}</p>
+                  {playback?.verdict === 'proxy' && !playback.proxyExists && (
+                    <button className="btn primary sm" onClick={() => void createProxy()} disabled={proxyRunning}>
+                      {proxyRunning ? <Spinner size={11} /> : <Zap size={12} />}
+                      {proxyRunning ? 'Building proxy…' : 'Create preview proxy'}
+                    </button>
+                  )}
+                  {playback?.verdict === 'proxy' && playback.proxyExists && (
+                    <p style={{ marginTop: 8 }}>
+                      A proxy exists — reloading the preview.
+                      <br />
+                      <button className="btn sm" style={{ marginTop: 6 }} onClick={() => setVideoError(null)}>
+                        Retry playback
+                      </button>
+                    </p>
+                  )}
+                  {playback?.verdict === 'native' && (
+                    <p style={{ marginTop: 8, color: 'var(--text-3)' }}>
+                      Rendering and silence detection still work — only in-app preview playback is affected.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
             {clip.captionStyleId !== 'none' && (
               <CaptionPreview
                 cues={cues}
@@ -329,12 +607,18 @@ export function EditorPage() {
                 positionY={clip.captionOverrides.positionY}
                 emphasis={clip.captionOverrides.emphasis}
                 uppercase={clip.captionOverrides.uppercase}
+                textColor={clip.captionOverrides.textColor}
+                highlightColor={clip.captionOverrides.highlightColor}
+                boxOpacity={clip.captionOverrides.boxOpacity}
+                outlineWidth={clip.captionOverrides.outlineWidth}
+                shadow={clip.captionOverrides.shadow}
                 currentTime={currentTime}
                 containerHeight={frame.h}
               />
             )}
             <div className="mono" style={{ position: 'absolute', top: 8, left: 10, background: 'rgba(0,0,0,0.55)', borderRadius: 3, padding: '2px 7px', pointerEvents: 'none', fontSize: 11 }}>
               {formatClock(currentTime, true)}
+              {useProxySrc && <span style={{ color: 'var(--warn)' }}> · proxy</span>}
             </div>
           </div>
         </div>
@@ -345,7 +629,42 @@ export function EditorPage() {
               <Scissors size={12} /> Trim <ChevronRight size={13} className="chev" />
             </summary>
             <div className="inspector-body">
-              <TrimPanel clip={clip} currentTime={currentTime} updateClip={updateClip} cues={cues} onSeek={(t) => { if (videoRef.current) videoRef.current.currentTime = t; setCurrentTime(t) }} />
+              <TrimPanel
+                clip={clip}
+                currentTime={currentTime}
+                updateClip={updateClip}
+                cues={cues}
+                onSeek={seekTo}
+                segments={segments}
+                onOptimize={async () => {
+                  try {
+                    if (saveTimer.current) clearTimeout(saveTimer.current)
+                    if (saveState !== 'saved') await saveNow(clip as unknown as Partial<Clip>)
+                    const result = await api['clips.optimizeBoundaries']({ clipId: clip.id })
+                    pushHistory()
+                    setClip(result.clip)
+                    historyRef.current.lastPush = Date.now()
+                    app.toast({
+                      level: 'success',
+                      message: result.adjusted
+                        ? `Boundaries optimized (quality ${Math.round(result.quality.before.score * 100)}% → ${Math.round(result.quality.after.score * 100)}%).`
+                        : 'Boundaries were already clean — nothing to change.',
+                      hint: `${result.startReason}; ${result.endReason}`
+                    })
+                  } catch (err) {
+                    app.toast({ level: 'error', ...errMessage(err) })
+                  }
+                }}
+              />
+            </div>
+          </details>
+
+          <details className="inspector-section" open>
+            <summary>
+              <Eraser size={12} /> Silence removal <ChevronRight size={13} className="chev" />
+            </summary>
+            <div className="inspector-body">
+              <SilencePanel clip={clip} updateClip={updateClip} onCutsChanged={(c) => updateClip({ silenceCuts: c }, true)} />
             </div>
           </details>
 
@@ -364,6 +683,22 @@ export function EditorPage() {
             </summary>
             <div className="inspector-body">
               <CropPanel clip={clip} updateClip={updateClip} />
+            </div>
+          </details>
+
+          <details className="inspector-section" open>
+            <summary>
+              <Gauge size={12} /> Output &amp; quality <ChevronRight size={13} className="chev" />
+            </summary>
+            <div className="inspector-body">
+              <OutputPanel
+                clip={clip}
+                project={project}
+                outputSeconds={outputSeconds}
+                updateClip={updateClip}
+                onQuickPreview={() => void queueRender(true)}
+                previewQueued={previewQueued}
+              />
             </div>
           </details>
 
@@ -386,9 +721,9 @@ export function EditorPage() {
           </button>
           <button
             className="btn ghost sm icon"
-            onClick={() => { if (videoRef.current) { videoRef.current.currentTime = clip.startTime; setCurrentTime(clip.startTime) } }}
+            onClick={() => seekTo(clip.startTime)}
             aria-label="Return to clip start"
-            title="Go to clip start"
+            title="Go to clip start (Home)"
           >
             <SkipBack size={13} />
           </button>
@@ -398,8 +733,13 @@ export function EditorPage() {
           <span className="timecode">
             {formatClock(currentTime, true)} <span className="total">/ {formatClock(project.duration ?? 0, true)}</span>
           </span>
+          {playing && videoRef.current && videoRef.current.playbackRate > 1 && (
+            <span className="tl-badge preview">{videoRef.current.playbackRate}×</span>
+          )}
           <span style={{ flex: 1 }} />
-          <span className="tiny">{cues.length} caption cues{activeCue ? ` · “${activeCue.text.slice(0, 40)}${activeCue.text.length > 40 ? '…' : ''}”` : ''}</span>
+          <span className="tiny">
+            {cues.length} caption cues{activeCue ? ` · “${activeCue.text.slice(0, 40)}${activeCue.text.length > 40 ? '…' : ''}”` : ''}
+          </span>
         </div>
 
         <Timeline
@@ -407,13 +747,14 @@ export function EditorPage() {
           startTime={clip.startTime}
           endTime={clip.endTime}
           currentTime={currentTime}
-          onSeek={(t) => {
-            if (videoRef.current) videoRef.current.currentTime = t
-            setCurrentTime(t)
-          }}
+          onSeek={seekTo}
           onChangeRange={(start, end) => updateClip({ startTime: start, endTime: end })}
           targetRange={{ min: targetRange.min, max: targetRange.max }}
           cues={cues}
+          fps={project.fps}
+          silenceCuts={clip.silenceCuts}
+          filmstrip={filmstrip}
+          waveform={waveform}
         />
       </div>
     </div>
@@ -428,7 +769,10 @@ function TrimPanel(props: {
   updateClip: (patch: Partial<Clip>, immediate?: boolean) => void
   cues: import('@shared/captions/segmentation').CaptionCue[]
   onSeek: (t: number) => void
+  segments: TranscriptSegment[]
+  onOptimize: () => Promise<void>
 }) {
+  const [optimizing, setOptimizing] = useState(false)
   const { clip, currentTime } = props
   const nudge = (field: 'startTime' | 'endTime', delta: number) => {
     if (field === 'startTime') {
@@ -439,6 +783,24 @@ function TrimPanel(props: {
   }
   return (
     <>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <button
+          className="btn sm"
+          style={{ flex: 1 }}
+          disabled={optimizing}
+          onClick={async () => {
+            setOptimizing(true)
+            try {
+              await props.onOptimize()
+            } finally {
+              setOptimizing(false)
+            }
+          }}
+          title="Snap the clip edges to sentence boundaries and add lead-in context where the opener needs setup"
+        >
+          {optimizing ? <Spinner size={11} /> : <Wand2 size={12} />} Optimize boundaries
+        </button>
+      </div>
       <div className="row">
         <div className="field" style={{ flex: 1 }}>
           <label className="field-label">Start (set with <span className="kbd">I</span>)</label>
@@ -492,7 +854,7 @@ function TrimPanel(props: {
           >
             <span className="mono tiny" style={{ width: 46, flexShrink: 0 }}>{formatClock(cue.startTime, true)}</span>
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {clip.captionTextEdits[cue.key] ?? cue.words.map((w) => w.text).join(' ')}
+              {props.clip.captionTextEdits[cue.key] ?? cue.words.map((w) => w.text).join(' ')}
             </span>
           </button>
         ))}
@@ -502,7 +864,105 @@ function TrimPanel(props: {
   )
 }
 
+// ======================================================== silence panel ===
+
+function SilencePanel(props: {
+  clip: Clip
+  updateClip: (patch: Partial<Clip>, immediate?: boolean) => void
+  onCutsChanged: (cuts: Array<{ start: number; end: number }>) => void
+}) {
+  const app = useAppStore()
+  const [detecting, setDetecting] = useState<string | null>(null)
+  const clip = props.clip
+  const cuts = clip.silenceCuts ?? []
+
+  async function detect(mode: 'auto' | 'aggressive') {
+    setDetecting(mode)
+    try {
+      const result = await api['analysis.detectSilence']({ clipId: clip.id, mode })
+      props.updateClip({ silenceCuts: result.cuts }, true)
+      app.toast({
+        level: 'success',
+        message:
+          result.cuts.length === 0
+            ? 'No removable silence found in this clip.'
+            : `Found ${result.detected.length} silent stretch${result.detected.length === 1 ? '' : 'es'} — removing ${result.savedSec.toFixed(1)}s.`,
+        hint: result.cuts.length > 0 ? 'Preview playback now skips the removed ranges; the render cuts them for real.' : undefined
+      })
+    } catch (err) {
+      app.toast({ level: 'error', ...errMessage(err) })
+    } finally {
+      setDetecting(null)
+    }
+  }
+
+  return (
+    <>
+      <div className="field-hint" style={{ marginBottom: 8 }}>
+        Detects silent stretches with FFmpeg and removes them from the output. The timeline shows removed
+        ranges in red; preview playback skips them.
+      </div>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <button className="btn sm" style={{ flex: 1 }} disabled={detecting !== null} onClick={() => void detect('auto')}>
+          {detecting === 'auto' ? <Spinner size={11} /> : <AudioLines size={12} />} Detect (standard)
+        </button>
+        <button className="btn sm" style={{ flex: 1 }} disabled={detecting !== null} onClick={() => void detect('aggressive')} title="Lower thresholds — removes shorter pauses too">
+          {detecting === 'aggressive' ? <Spinner size={11} /> : <AudioLines size={12} />} Aggressive
+        </button>
+      </div>
+
+      {cuts.length > 0 ? (
+        <>
+          <div className="row tiny" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
+            <span>
+              <strong style={{ color: 'var(--text-2)' }}>{cuts.length}</strong> cut{cuts.length === 1 ? '' : 's'} ·{' '}
+              <strong style={{ color: 'var(--danger)' }}>
+                −{cuts.reduce((s, c) => s + (c.end - c.start), 0).toFixed(1)}s
+              </strong>{' '}
+              removed
+            </span>
+            <button className="btn ghost sm" onClick={() => props.onCutsChanged([])}>
+              <RotateCcw size={11} /> Restore all
+            </button>
+          </div>
+          <div className="stack sm" style={{ maxHeight: 180, overflowY: 'auto' }}>
+            {cuts.map((c, i) => (
+              <div key={i} className="row tiny" style={{ justifyContent: 'space-between' }}>
+                <span className="mono">
+                  {formatClock(c.start, true)} → {formatClock(c.end, true)}
+                  <span style={{ color: 'var(--text-3)' }}> ({(c.end - c.start).toFixed(1)}s)</span>
+                </span>
+                <button className="btn ghost sm" style={{ padding: '1px 6px' }} onClick={() => props.onCutsChanged(cuts.filter((_, j) => j !== i))}>
+                  Keep
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="tiny" style={{ color: 'var(--text-3)' }}>
+          No silence cuts on this clip.
+        </div>
+      )}
+    </>
+  )
+}
+
 // ======================================================== captions panel ===
+
+const CAPTION_CATEGORIES: Array<{ id: string; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'clean', label: 'Clean' },
+  { id: 'editorial', label: 'Editorial' },
+  { id: 'bold', label: 'Bold' },
+  { id: 'high-contrast', label: 'High contrast' },
+  { id: 'highlight', label: 'Highlight' },
+  { id: 'kinetic', label: 'Kinetic' },
+  { id: 'minimal', label: 'Minimal' },
+  { id: 'lower-third', label: 'Lower third' },
+  { id: 'boxed', label: 'Boxed' },
+  { id: 'center', label: 'Center' }
+]
 
 function CaptionsPanel(props: {
   clip: Clip
@@ -510,33 +970,79 @@ function CaptionsPanel(props: {
   updateClip: (patch: Partial<Clip>, immediate?: boolean) => void
 }) {
   const { clip } = props
+  const [category, setCategory] = useState('all')
+  const [showSafeArea, setShowSafeArea] = useState(false)
   const overrides: CaptionOverrides = clip.captionOverrides
   const style = getCaptionStyle(clip.captionStyleId)
+
+  const visibleStyles = CAPTION_STYLES.filter((s) => category === 'all' || s.category === category)
 
   function setOverride(patch: CaptionOverrides) {
     props.updateClip({ captionOverrides: { ...overrides, ...patch } })
   }
 
+  const sampleCue = props.cues[0]
+  const sampleText = (sampleCue?.words.slice(0, 3).map((w) => w.text).join(' ')) || 'Your captions here'
+
   return (
     <>
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))', gap: 6 }}>
-        {[...CAPTION_STYLES, { id: 'none', label: 'Off' } as { id: string; label: string }].map((s) => (
+      <div className="cap-category-tabs">
+        {CAPTION_CATEGORIES.map((c) => (
           <button
-            key={s.id}
-            className={`btn sm ${clip.captionStyleId === s.id ? 'primary' : ''}`}
-            style={{ flexDirection: 'column', padding: '8px 4px', height: 52, gap: 3 }}
-            onClick={() => props.updateClip({ captionStyleId: s.id })}
-            title={s.id === 'none' ? 'Render without captions' : getCaptionStyle(s.id).description}
+            key={c.id}
+            className={`cap-category-tab ${category === c.id ? 'active' : ''}`}
+            onClick={() => setCategory(c.id)}
           >
-            <Type size={12} />
-            {s.label}
+            {c.label}
           </button>
         ))}
+      </div>
+
+      <div className="cap-templates">
+        {([
+          ...visibleStyles,
+          { id: 'none', label: 'Off', description: 'Render without captions' }
+        ] as Array<{ id: string; label: string; description?: string }>).map((s) =>
+          s.id === 'none' ? (
+            <button
+              key="none"
+              className={`btn sm ${clip.captionStyleId === 'none' ? 'primary' : ''}`}
+              style={{ flexDirection: 'column', padding: '8px 4px', height: 86, gap: 3 }}
+              onClick={() => props.updateClip({ captionStyleId: 'none' })}
+              title="Render without captions"
+            >
+              <Type size={12} />
+              Off
+            </button>
+          ) : (
+            <button
+              key={s.id}
+              className={`btn sm ${clip.captionStyleId === s.id ? 'primary' : ''}`}
+              style={{ flexDirection: 'column', padding: '4px', height: 86, gap: 3, alignItems: 'stretch' }}
+              onClick={() => props.updateClip({ captionStyleId: s.id })}
+              title={s.description ?? ''}
+            >
+              <TemplatePreview
+                style={CAPTION_STYLES.find((cs) => cs.id === s.id) as import('@shared/constants').CaptionStylePreset}
+                text={sampleText}
+                safeArea={showSafeArea}
+                active={clip.captionStyleId === s.id}
+              />
+              <span style={{ fontSize: 10 }}>{s.label}</span>
+            </button>
+          )
+        )}
       </div>
       <div className="field-hint">{style.description}</div>
 
       {clip.captionStyleId !== 'none' && (
         <>
+          <Switch
+            label="Show platform safe area"
+            hint="Editor guide only — never rendered into the output."
+            checked={showSafeArea}
+            onChange={setShowSafeArea}
+          />
           <Field label={`Size — ${Math.round(overrides.fontSizePct ?? style.fontSizePct)}% of frame height`}>
             <input
               type="range"
@@ -580,31 +1086,354 @@ function CaptionsPanel(props: {
           />
 
           <div className="divider" />
-          <div className="section-title">Caption text</div>
+          <div className="section-title">Colors &amp; container</div>
+          <div className="row" style={{ gap: 10 }}>
+            <label className="tiny" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              Text
+              <input
+                type="color"
+                className="color-input"
+                value={overrides.textColor ?? style.textColor}
+                onChange={(e) => setOverride({ textColor: e.target.value })}
+              />
+            </label>
+            <label className="tiny" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              Highlight
+              <input
+                type="color"
+                className="color-input"
+                value={overrides.highlightColor ?? style.highlightColor}
+                onChange={(e) => setOverride({ highlightColor: e.target.value })}
+              />
+            </label>
+            {(overrides.textColor !== undefined || overrides.highlightColor !== undefined) && (
+              <button
+                className="btn ghost sm"
+                style={{ padding: '2px 6px' }}
+                onClick={() => {
+                  const next = { ...overrides }
+                  delete next.textColor
+                  delete next.highlightColor
+                  props.updateClip({ captionOverrides: next })
+                }}
+              >
+                Reset
+              </button>
+            )}
+          </div>
+          <Field label={`Box opacity — ${Math.round((overrides.boxOpacity ?? style.boxOpacity) * 100)}%`}>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={overrides.boxOpacity ?? style.boxOpacity}
+              onChange={(e) => setOverride({ boxOpacity: parseFloat(e.target.value) })}
+            />
+          </Field>
+          <Field label={`Outline width — ${(overrides.outlineWidth ?? style.outlineWidth).toFixed(1)}`}>
+            <input
+              type="range"
+              min={0}
+              max={8}
+              step={0.5}
+              value={overrides.outlineWidth ?? style.outlineWidth}
+              onChange={(e) => setOverride({ outlineWidth: parseFloat(e.target.value) })}
+            />
+          </Field>
+          <Field label={`Shadow — ${(overrides.shadow ?? style.shadow).toFixed(1)}`}>
+            <input
+              type="range"
+              min={0}
+              max={8}
+              step={0.5}
+              value={overrides.shadow ?? style.shadow}
+              onChange={(e) => setOverride({ shadow: parseFloat(e.target.value) })}
+            />
+          </Field>
+
+          <div className="divider" />
+          <div className="section-title">Caption cues</div>
           <div className="field-hint">
-            Fix transcription errors per caption. Edits apply to preview and render; timing is unaffected.
+            Edit text, split or merge cues, and nudge timing. Timing shifts apply to preview and render alike.
           </div>
-          <div className="stack sm" style={{ maxHeight: 240, overflowY: 'auto' }}>
-            {props.cues.slice(0, 40).map((cue) => (
-              <div key={cue.key} className="field">
-                <label className="field-label mono" style={{ fontSize: 10 }}>{formatClock(cue.startTime, true)}</label>
-                <input
-                  className="input"
-                  defaultValue={clip.captionTextEdits[cue.key] ?? cue.words.map((w) => w.text).join(' ')}
-                  onBlur={(e) => {
-                    const original = cue.words.map((w) => w.text).join(' ')
-                    const value = e.target.value
-                    const edits = { ...clip.captionTextEdits }
-                    if (value === original) delete edits[cue.key]
-                    else edits[cue.key] = value
-                    props.updateClip({ captionTextEdits: edits })
-                  }}
-                />
-              </div>
-            ))}
+          <div className="stack sm" style={{ maxHeight: 280, overflowY: 'auto' }}>
+            {props.cues.map((cue, idx) => {
+              const next = props.cues[idx + 1]
+              const split = clip.captionCueSplits?.[cue.key]
+              const merged = clip.captionCueMerges?.[cue.key]
+              const offset = clip.captionTimingOffsets?.[cue.key]
+              const edited = clip.captionTextEdits[cue.key] !== undefined
+              return (
+                <div key={cue.key} className="field" style={{ marginBottom: 0 }}>
+                  <div className="cue-row">
+                    <label className="field-label mono" style={{ fontSize: 10, display: 'grid', gap: 2 }}>
+                      {formatClock(cue.startTime, true)}
+                      {offset !== undefined && <span style={{ color: 'var(--warn)' }}>{offset > 0 ? '+' : ''}{offset.toFixed(1)}s</span>}
+                    </label>
+                    <input
+                      className="input"
+                      style={{ borderColor: edited ? 'var(--accent)' : undefined }}
+                      defaultValue={clip.captionTextEdits[cue.key] ?? cue.words.map((w) => w.text).join(' ')}
+                      onBlur={(e) => {
+                        const original = cue.words.map((w) => w.text).join(' ')
+                        const value = e.target.value
+                        const edits = { ...clip.captionTextEdits }
+                        if (value === original) delete edits[cue.key]
+                        else edits[cue.key] = value
+                        props.updateClip({ captionTextEdits: edits })
+                      }}
+                    />
+                    <div className="cue-actions">
+                      <button
+                        className="btn ghost sm"
+                        title="Split this cue in half"
+                        disabled={cue.words.length < 2 || split !== undefined}
+                        onClick={() => {
+                          const splits = { ...(clip.captionCueSplits ?? {}) }
+                          splits[cue.key] = Math.max(1, Math.floor(cue.words.length / 2))
+                          props.updateClip({ captionCueSplits: splits })
+                        }}
+                      >
+                        <Scissors size={11} />
+                      </button>
+                      <button
+                        className="btn ghost sm"
+                        title="Merge with the next cue"
+                        disabled={!next || merged}
+                        onClick={() => {
+                          const merges = { ...(clip.captionCueMerges ?? {}) }
+                          merges[cue.key] = true
+                          props.updateClip({ captionCueMerges: merges })
+                        }}
+                      >
+                        <Copy size={11} style={{ transform: 'rotate(90deg)' }} />
+                      </button>
+                      <button
+                        className="btn ghost sm"
+                        title="Shift timing 0.1s earlier"
+                        onClick={() => {
+                          const offsets = { ...(clip.captionTimingOffsets ?? {}) }
+                          const cur = offsets[cue.key] ?? 0
+                          const nextVal = Math.round((cur - 0.1) * 10) / 10
+                          if (nextVal === 0) delete offsets[cue.key]
+                          else offsets[cue.key] = nextVal
+                          props.updateClip({ captionTimingOffsets: offsets })
+                        }}
+                      >
+                        −
+                      </button>
+                      <button
+                        className="btn ghost sm"
+                        title="Shift timing 0.1s later"
+                        onClick={() => {
+                          const offsets = { ...(clip.captionTimingOffsets ?? {}) }
+                          const cur = offsets[cue.key] ?? 0
+                          const nextVal = Math.round((cur + 0.1) * 10) / 10
+                          if (nextVal === 0) delete offsets[cue.key]
+                          else offsets[cue.key] = nextVal
+                          props.updateClip({ captionTimingOffsets: offsets })
+                        }}
+                      >
+                        +
+                      </button>
+                      <button
+                        className="btn ghost sm"
+                        title="Reset this cue (text, split, merge, timing)"
+                        disabled={!edited && split === undefined && !merged && offset === undefined}
+                        onClick={() => {
+                          const edits = { ...clip.captionTextEdits }
+                          const splits = { ...(clip.captionCueSplits ?? {}) }
+                          const merges = { ...(clip.captionCueMerges ?? {}) }
+                          const offsets = { ...(clip.captionTimingOffsets ?? {}) }
+                          // split keys are `${key}/a` `${key}/b`
+                          delete edits[cue.key]
+                          delete edits[`${cue.key}/a`]
+                          delete edits[`${cue.key}/b`]
+                          delete splits[cue.key]
+                          delete merges[cue.key]
+                          delete offsets[cue.key]
+                          props.updateClip({
+                            captionTextEdits: edits,
+                            captionCueSplits: splits,
+                            captionCueMerges: merges,
+                            captionTimingOffsets: offsets
+                          })
+                        }}
+                      >
+                        <RotateCcw size={11} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+            {props.cues.length === 0 && <div className="tiny">No cues in this clip's range.</div>}
           </div>
+          {(Object.keys(clip.captionCueSplits ?? {}).length > 0 ||
+            Object.keys(clip.captionCueMerges ?? {}).length > 0 ||
+            Object.keys(clip.captionTimingOffsets ?? {}).length > 0) && (
+            <button
+              className="btn ghost sm"
+              style={{ marginTop: 6 }}
+              onClick={() =>
+                props.updateClip({ captionCueSplits: {}, captionCueMerges: {}, captionTimingOffsets: {} })
+              }
+            >
+              <RotateCcw size={11} /> Reset all cue structure edits
+            </button>
+          )}
         </>
       )}
+    </>
+  )
+}
+
+/** Live mini preview of a caption template (mirrors CaptionPreview styling). */
+function TemplatePreview(props: {
+  style: import('@shared/constants').CaptionStylePreset
+  text: string
+  safeArea: boolean
+  active: boolean
+}) {
+  const s = props.style
+  const fontSize = 11
+  const boxOpacity = s.boxOpacity
+  return (
+    <div className="cap-preview" style={props.active ? { borderColor: 'var(--accent)' } : undefined}>
+      {props.safeArea && <span className="safe-area" />}
+      <span
+        className="cap-preview-text"
+        style={{
+          color: s.textColor,
+          fontWeight: s.fontFile.includes('900') ? 900 : s.fontFile.includes('800') ? 800 : s.fontFile.includes('700') ? 700 : s.fontFile.includes('600') ? 600 : 400,
+          fontSize,
+          textTransform: s.uppercase ? 'uppercase' : 'none',
+          WebkitTextStroke: s.outlineWidth > 0 ? `${Math.min(1.4, s.outlineWidth / 3)}px ${s.outlineColor}` : undefined,
+          paintOrder: 'stroke fill',
+          textShadow: s.shadow > 0 ? `0 1px 3px rgba(0,0,0,0.8)` : undefined,
+          background: boxOpacity > 0 ? `rgba(${parseInt(s.boxColor.slice(1, 3), 16)},${parseInt(s.boxColor.slice(3, 5), 16)},${parseInt(s.boxColor.slice(5, 7), 16)},${boxOpacity})` : undefined,
+          padding: boxOpacity > 0 ? '2px 6px' : undefined,
+          borderRadius: boxOpacity > 0 ? 3 : undefined
+        }}
+      >
+        {s.emphasis ? (
+          <>
+            <span style={{ color: s.highlightColor }}>{props.text.split(' ')[0]}</span> {props.text.split(' ').slice(1).join(' ')}
+          </>
+        ) : (
+          props.text
+        )}
+      </span>
+    </div>
+  )
+}
+
+// =========================================================== output panel ===
+
+function OutputPanel(props: {
+  clip: Clip
+  project: import('@shared/types').Project
+  outputSeconds: number
+  updateClip: (patch: Partial<Clip>, immediate?: boolean) => void
+  onQuickPreview: () => void
+  previewQueued: boolean
+}) {
+  const { clip, project } = props
+  const dims = resolutionFor(clip.aspectRatio, clip.outputResolution)
+  const sourceShortSide = project.width && project.height ? Math.min(project.width, project.height) : null
+  const upscaling = sourceShortSide !== null && dims.w > sourceShortSide + 2
+  const estimateMb = estimateRenderSizeMb(clip.aspectRatio, clip.outputResolution, clip.outputQuality, props.outputSeconds)
+  const quality = QUALITY_PRESETS.find((q) => q.id === clip.outputQuality)
+
+  return (
+    <>
+      <Field label="Resolution">
+        <select
+          className="select"
+          value={clip.outputResolution}
+          onChange={(e) => props.updateClip({ outputResolution: e.target.value as Clip['outputResolution'] })}
+        >
+          {RESOLUTION_PRESETS.map((r) => (
+            <option key={r.id} value={r.id}>
+              {r.label} — {resolutionFor(clip.aspectRatio, r.id).w}×{resolutionFor(clip.aspectRatio, r.id).h} ({r.hint})
+            </option>
+          ))}
+        </select>
+        {upscaling && (
+          <div className="field-hint" style={{ color: 'var(--warn)', display: 'flex', gap: 5, alignItems: 'flex-start' }}>
+            <AlertTriangle size={12} style={{ flexShrink: 0, marginTop: 1 }} />
+            The source is {sourceShortSide}px on its short side — this output would be upscaled and will not add real detail.
+          </div>
+        )}
+      </Field>
+
+      <Field label="Quality">
+        <select
+          className="select"
+          value={clip.outputQuality}
+          onChange={(e) => props.updateClip({ outputQuality: e.target.value as Clip['outputQuality'] })}
+        >
+          {QUALITY_PRESETS.map((q) => (
+            <option key={q.id} value={q.id}>
+              {q.label} — {q.hint}
+            </option>
+          ))}
+        </select>
+        {quality && (
+          <div className="field-hint">
+            {quality.id === 'draft' ? 'Fast but visible compression.' : quality.id === 'standard' ? 'Balanced delivery quality.' : quality.id === 'high' ? 'High-quality delivery.' : 'Maximum practical quality; larger files, slower renders.'}
+          </div>
+        )}
+      </Field>
+
+      <Field label="Frame rate">
+        <select
+          className="select"
+          value={String(clip.outputFps)}
+          onChange={(e) =>
+            props.updateClip({
+              outputFps: e.target.value === 'source' ? 'source' : (Number(e.target.value) as Clip['outputFps'])
+            })
+          }
+        >
+          <option value="source">Match source{project.fps ? ` (${project.fps.toFixed(2)} fps)` : ''}</option>
+          <option value="24">24 fps — cinematic</option>
+          <option value="25">25 fps — PAL</option>
+          <option value="30">30 fps — standard</option>
+          <option value="50">50 fps</option>
+          <option value="60">60 fps — smooth</option>
+        </select>
+        <div className="field-hint">
+          Output is always constant frame rate — variable-frame-rate sources are normalized automatically.
+        </div>
+      </Field>
+
+      <div className="divider" />
+      <div className="row tiny" style={{ justifyContent: 'space-between' }}>
+        <span style={{ color: 'var(--text-3)' }}>Output</span>
+        <span className="mono">
+          {dims.w}×{dims.h} · {props.outputSeconds.toFixed(1)}s · ~{estimateMb} MB
+        </span>
+      </div>
+      <div className="row tiny" style={{ justifyContent: 'space-between' }}>
+        <span style={{ color: 'var(--text-3)' }}>Encoder</span>
+        <span>H.264 + AAC 48 kHz</span>
+      </div>
+      <div className="row" style={{ marginTop: 8 }}>
+        <button className="btn sm" style={{ flex: 1 }} onClick={() => props.updateClip({ outputResolution: '1080p', outputQuality: 'standard', outputFps: 'source' })}>
+          <RotateCcw size={11} /> Reset
+        </button>
+        <button
+          className="btn sm"
+          style={{ flex: 2 }}
+          disabled={props.previewQueued}
+          onClick={props.onQuickPreview}
+          title="Render a fast 720p draft to check the cut, captions and framing"
+        >
+          {props.previewQueued ? <Spinner size={11} /> : <Zap size={11} />} Quick preview render
+        </button>
+      </div>
     </>
   )
 }
@@ -657,11 +1486,15 @@ function CropPanel(props: { clip: Clip; updateClip: (patch: Partial<Clip>, immed
       <div className="divider" />
       <Field label="Aspect ratio">
         <select className="select" value={clip.aspectRatio} onChange={(e) => props.updateClip({ aspectRatio: e.target.value as Clip['aspectRatio'] })}>
-          <option value="9:16">9:16 · 1080×1920 (recommended)</option>
-          <option value="4:5">4:5 · 1080×1350</option>
-          <option value="1:1">1:1 · 1080×1080</option>
-          <option value="16:9">16:9 · 1920×1080 (keep horizontal)</option>
+          {(Object.keys(ASPECT_RATIOS) as Array<keyof typeof ASPECT_RATIOS>).map((id) => (
+            <option key={id} value={id}>
+              {ASPECT_RATIOS[id].label} — {resolutionFor(id, clip.outputResolution).w}×{resolutionFor(id, clip.outputResolution).h}
+            </option>
+          ))}
         </select>
+        <div className="field-hint">
+          The output frame keeps this ratio at the chosen resolution; the preview mirrors the exact crop the renderer applies.
+        </div>
       </Field>
     </>
   )

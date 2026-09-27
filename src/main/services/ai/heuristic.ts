@@ -1,6 +1,7 @@
 import type { ScoreBreakdown, TranscriptSegment } from '@shared/types'
 import { HOOK_CUE_PATTERNS, QUESTION_PATTERN, NUMBER_PATTERN } from '@shared/constants'
 import { aggregateScore } from '@shared/candidates'
+import { boundaryQuality, deadAirRatio, sentenceSpans } from '@shared/analysis/boundaries'
 import type { RawCandidate } from '@shared/candidates'
 
 /**
@@ -36,6 +37,7 @@ export function runHeuristicAnalysis(
   opts: HeuristicOptions
 ): HeuristicCandidate[] {
   if (segments.length === 0) return []
+  const spans = sentenceSpans(segments)
 
   const minS = Math.max(6, opts.minSeconds * 0.65)
   const maxS = opts.maxSeconds * 1.35
@@ -53,6 +55,14 @@ export function runHeuristicAnalysis(
 
       const window = segments.slice(i, j + 1)
       const scored = scoreWindow(window, segments[i - 1], dur, opts)
+
+      // Boundary + dead-air quality adjustments (§42): clean sentence starts
+      // and ends rank higher; long stretches without speech rank lower.
+      const boundary = boundaryQuality({ startTime, endTime }, spans)
+      const deadAir = deadAirRatio({ startTime, endTime }, segments)
+      const adjusted =
+        Math.round(scored.overallScore * (0.9 + 0.1 * boundary.score)) - Math.round(deadAir * 10)
+      scored.overallScore = Math.max(0, Math.min(100, adjusted))
       if (scored.overallScore < 32) continue
 
       const text = window.map((s) => s.text.trim()).join(' ')

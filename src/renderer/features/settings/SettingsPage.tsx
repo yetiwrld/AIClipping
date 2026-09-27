@@ -6,7 +6,7 @@ import {
 import { api, errMessage, isElectron } from '../../api/client'
 import { useAppStore } from '../../stores/app'
 import { Field, Switch, formatBytes, Spinner, ErrorBox } from '../../components/ui'
-import { CAPTION_STYLES } from '@shared/constants'
+import { CAPTION_STYLES, QUALITY_PRESETS, RESOLUTION_PRESETS } from '@shared/constants'
 import type { AiProviderRuntimeConfig } from '@shared/types'
 
 type Section = 'ai' | 'transcription' | 'video' | 'captions' | 'export' | 'storage' | 'advanced'
@@ -420,31 +420,62 @@ function VideoSection() {
         </select>
       </Field>
       <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Field label="x264 preset" hint="veryfast is a good quality/speed balance.">
-          <select className="select" value={v.renderPreset} onChange={(e) => void app.saveSettings({ video: { renderPreset: e.target.value } })}>
-            <option value="ultrafast">ultrafast</option>
-            <option value="veryfast">veryfast</option>
-            <option value="medium">medium</option>
-            <option value="slow">slow</option>
+        <Field label="Default output resolution" hint="Applied to new clips; each clip can override it in the editor.">
+          <select className="select" value={v.defaultResolution} onChange={(e) => void app.saveSettings({ video: { defaultResolution: e.target.value } })}>
+            {RESOLUTION_PRESETS.map((r) => (
+              <option key={r.id} value={r.id}>{r.label} — {r.hint}</option>
+            ))}
           </select>
         </Field>
-        <Field label={`Quality (CRF ${v.crf})`} hint="Lower = better quality & larger files. 18 is visually lossless for most content.">
-          <input type="range" min={14} max={28} step={1} defaultValue={v.crf}
-            onMouseUp={(e) => void app.saveSettings({ video: { crf: parseInt((e.target as HTMLInputElement).value, 10) } })} />
+        <Field label="Default output quality" hint="Draft is for quick checks; Standard/high/max balance size vs fidelity.">
+          <select className="select" value={v.defaultQuality} onChange={(e) => void app.saveSettings({ video: { defaultQuality: e.target.value } })}>
+            {QUALITY_PRESETS.map((q) => (
+              <option key={q.id} value={q.id}>{q.label} — {q.hint}</option>
+            ))}
+          </select>
         </Field>
       </div>
-      <Switch
-        label="Use hardware encoder when available"
-        hint="NVENC / QSV / AMF / VideoToolbox. If a hardware render fails, Clipwright automatically retries on CPU."
-        checked={v.useHardwareEncoder}
-        onChange={(val) => void app.saveSettings({ video: { useHardwareEncoder: val } })}
-      />
+      <Field label="Encoder">
+        <select className="select" value={v.hardwareEncoding} onChange={(e) => void app.saveSettings({ video: { hardwareEncoding: e.target.value } })}>
+          <option value="auto">Auto — hardware when available, CPU fallback</option>
+          <option value="cpu">CPU (libx264) — most compatible</option>
+          <option value="hardware">Hardware only — fail with a clear error if unavailable</option>
+        </select>
+        <div className="field-hint">
+          Hardware encoders: NVENC / QSV / AMF / VideoToolbox. In Auto mode a failed hardware render is retried on CPU automatically.
+        </div>
+      </Field>
       <Switch
         label="Normalize loudness (EBU R128)"
         hint="Consistent -16 LUFS across clips — recommended for social platforms."
         checked={v.audioNormalize}
         onChange={(val) => void app.saveSettings({ video: { audioNormalize: val } })}
       />
+      <div className="divider" />
+      <div className="section-title">Silence detection</div>
+      <Field label="Mode">
+        <select className="select" value={v.silence.mode} onChange={(e) => void app.saveSettings({ video: { silence: { mode: e.target.value } } })}>
+          <option value="off">Off — never suggest silence cuts</option>
+          <option value="auto">Standard — balanced detection</option>
+          <option value="aggressive">Aggressive — remove shorter pauses too</option>
+        </select>
+      </Field>
+      {v.silence.mode !== 'off' && (
+        <div className="grid" style={{ gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+          <Field label={`Min silence — ${v.silence.minSilenceMs} ms`}>
+            <input type="range" min={200} max={2000} step={50} defaultValue={v.silence.minSilenceMs}
+              onMouseUp={(e) => void app.saveSettings({ video: { silence: { minSilenceMs: parseInt((e.target as HTMLInputElement).value, 10) } } })} />
+          </Field>
+          <Field label={`Padding — ${v.silence.paddingMs} ms`}>
+            <input type="range" min={0} max={500} step={10} defaultValue={v.silence.paddingMs}
+              onMouseUp={(e) => void app.saveSettings({ video: { silence: { paddingMs: parseInt((e.target as HTMLInputElement).value, 10) } } })} />
+          </Field>
+          <Field label={`Max single cut — ${v.silence.maxCutSec}s`}>
+            <input type="range" min={1} max={20} step={1} defaultValue={v.silence.maxCutSec}
+              onMouseUp={(e) => void app.saveSettings({ video: { silence: { maxCutSec: parseInt((e.target as HTMLInputElement).value, 10) } } })} />
+          </Field>
+        </div>
+      )}
       <Field label={`Render concurrency — ${settings.advanced.renderConcurrency}`} hint="More than 1 renders multiple clips at once but multiplies CPU load.">
         <input type="range" min={1} max={4} step={1} defaultValue={settings.advanced.renderConcurrency}
           onMouseUp={(e) => void app.saveSettings({ advanced: { renderConcurrency: parseInt((e.target as HTMLInputElement).value, 10) } })} />

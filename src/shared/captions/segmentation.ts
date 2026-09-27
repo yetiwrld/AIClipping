@@ -32,6 +32,12 @@ export interface CaptionBuildOptions {
   sentenceBreakAfterSec?: number
   /** User text edits keyed by cue key */
   textEdits?: Record<string, string>
+  /** Split the cue with this key after N words (cue editing). */
+  splits?: Record<string, number>
+  /** Merge the cue with this key into the following cue (cue editing). */
+  merges?: Record<string, boolean>
+  /** Per-cue timing shifts in seconds, keyed by cue key. */
+  timingOffsets?: Record<string, number>
   /** Clamp cues to this window (clip trim) */
   fromTime?: number
   toTime?: number
@@ -188,7 +194,94 @@ export function buildCues(
     if (breakHere) flush()
   }
   flush()
-  return cues
+  return applyCueEdits(cues, opts)
+}
+
+/** Apply user cue edits (split / merge / timing shifts) to built cues. */
+function applyCueEdits(cues: CaptionCue[], opts: CaptionBuildOptions): CaptionCue[] {
+  let out = cues
+
+  // --- splits ---
+  if (opts.splits && Object.keys(opts.splits).length > 0) {
+    const next: CaptionCue[] = []
+    for (const cue of out) {
+      const after = opts.splits[cue.key]
+      if (
+        after !== undefined && Number.isFinite(after) &&
+        after >= 1 && after < cue.words.length
+      ) {
+        const a = cue.words.slice(0, after)
+        const b = cue.words.slice(after)
+        const mk = (words: CaptionWord[], suffix: string): CaptionCue => {
+          const start = words[0].start
+          const end = Math.max(words[words.length - 1].end, start + 0.2)
+          const text = words.map((w) => w.text).join(' ')
+          return {
+            key: `${cue.key}/${suffix}`,
+            startTime: start,
+            endTime: end,
+            words,
+            text,
+            lines: wrapLines(words, opts.maxCharsPerLine, opts.maxLines)
+          }
+        }
+        next.push(mk(a, 'a'), mk(b, 'b'))
+      } else {
+        next.push(cue)
+      }
+    }
+    out = next
+  }
+
+  // --- merges ---
+  if (opts.merges && Object.keys(opts.merges).length > 0) {
+    const next: CaptionCue[] = []
+    for (let i = 0; i < out.length; i++) {
+      const cue = out[i]
+      if (opts.merges[cue.key] && i + 1 < out.length) {
+        const b = out[i + 1]
+        const words = [...cue.words, ...b.words]
+        const start = cue.startTime
+        const end = Math.max(b.endTime, start + 0.2)
+        const text = `${cue.text} ${b.text}`.trim()
+        next.push({
+          key: cue.key,
+          startTime: start,
+          endTime: end,
+          words,
+          text,
+          lines: wrapLines(words, opts.maxCharsPerLine, opts.maxLines + 1)
+        })
+        i++ // consumed b
+      } else {
+        next.push(cue)
+      }
+    }
+    out = next
+  }
+
+  // --- timing offsets ---
+  if (opts.timingOffsets && Object.keys(opts.timingOffsets).length > 0) {
+    for (let i = 0; i < out.length; i++) {
+      const cue = out[i]
+      const off = opts.timingOffsets[cue.key]
+      if (off === undefined || !Number.isFinite(off) || off === 0) continue
+      const prev = out[i - 1]
+      const nxt = out[i + 1]
+      let start = cue.startTime + off
+      let end = cue.endTime + off
+      // clamp: keep 40ms inside neighbours
+      if (prev) start = Math.max(start, prev.endTime + 0.04)
+      if (nxt) end = Math.min(end, nxt.startTime - 0.04)
+      if (end - start < 0.15) continue
+      const shift = start - cue.startTime
+      cue.startTime = start
+      cue.endTime = end
+      cue.words = cue.words.map((w) => ({ ...w, start: w.start + shift, end: w.end + shift }))
+    }
+  }
+
+  return out
 }
 
 /** The cue active at a given time (for preview + highlight). */

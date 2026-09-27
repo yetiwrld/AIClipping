@@ -126,6 +126,20 @@ function registerMediaProtocol(workspaceRoot: string): void {
     '.mov': 'video/quicktime',
     '.mkv': 'video/x-matroska',
     '.webm': 'video/webm',
+    '.avi': 'video/x-msvideo',
+    '.wmv': 'video/x-ms-wmv',
+    '.flv': 'video/x-flv',
+    '.ts': 'video/mp2t',
+    '.mpg': 'video/mpeg',
+    '.mpeg': 'video/mpeg',
+    '.mp3': 'audio/mpeg',
+    '.m4a': 'audio/mp4',
+    '.aac': 'audio/aac',
+    '.wav': 'audio/wav',
+    '.ogg': 'audio/ogg',
+    '.oga': 'audio/ogg',
+    '.opus': 'audio/ogg',
+    '.flac': 'audio/flac',
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
     '.png': 'image/png',
@@ -143,11 +157,22 @@ async function handleMediaRequest(
   mimeByExt: Record<string, string>
 ): Promise<Response> {
   let target: string
+  let wantsProxy = false
   try {
     const url = new URL(request.url)
     target = decodeURIComponent(url.pathname.slice(1))
+    // ?proxy=1 swaps in the transcoded preview copy when it exists (§8) —
+    // used for codecs Chromium cannot decode directly. Renders always read
+    // the ORIGINAL file; this only affects preview playback.
+    if (url.searchParams.get('proxy') === '1' && path.basename(target).startsWith('source.')) {
+      wantsProxy = true
+    }
   } catch {
     return new Response('Bad request', { status: 400 })
+  }
+  if (wantsProxy) {
+    const proxy = path.join(path.dirname(target), 'proxy.mp4')
+    if (fs.existsSync(proxy) && fs.statSync(proxy).isFile()) target = proxy
   }
   if (!target || !isInsideWorkspace(workspaceRoot, target) || !fs.existsSync(target)) {
     return new Response('Not found', { status: 404 })

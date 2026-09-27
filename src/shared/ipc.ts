@@ -46,6 +46,28 @@ export interface ClipwrightApi {
   'media.pickSourceFile'(): { filePath: string | null }
   'media.pickTranscriptFile'(): { filePath: string | null }
 
+  /** Playback compatibility check + existing proxy status for the project source. */
+  'media.checkPlayback'(p: { projectId: string }): Promise<{
+    verdict: 'native' | 'proxy' | 'audio-only'
+    reason: string
+    proxyExists: boolean
+    proxyPath: string | null
+  }>
+  /** Queue a preview-proxy transcode (task). */
+  'media.renderProxy'(p: { projectId: string }): { taskId: string }
+
+  /** Filmstrip thumbnails for the timeline (generated + cached via FFmpeg). */
+  'media.filmstrip'(p: { projectId: string; count?: number }): Promise<{
+    frames: Array<{ t: number; path: string }>
+    cached: boolean
+  }>
+  /** Audio waveform peaks for the timeline (generated + cached via FFmpeg). */
+  'media.waveform'(p: { projectId: string; buckets?: number }): Promise<{
+    duration: number
+    peaks: number[]
+    silent: boolean
+  }>
+
   // transcript
   'transcript.get'(p: { projectId: string }): Promise<TranscriptSegment[]>
   'transcript.start'(p: { projectId: string; providerId: 'faster-whisper-local' | 'openai-compatible' }): { taskId: string }
@@ -63,6 +85,33 @@ export interface ClipwrightApi {
     patch: { status?: 'discovered' | 'approved' | 'rejected' | 'converted' }
   }): Promise<ClipCandidate>
 
+  /** Run FFmpeg silence detection over the clip window and store the cuts. */
+  'analysis.detectSilence'(p: {
+    clipId: string
+    mode: 'auto' | 'aggressive' | 'custom'
+    minSilenceMs?: number
+    paddingMs?: number
+    maxCutSec?: number
+  }): Promise<{
+    cuts: Array<{ start: number; end: number }>
+    detected: Array<{ start: number; end: number }>
+    savedSec: number
+    clip: Clip
+  }>
+
+  /** Snap clip edges to sentence boundaries + add lead-in context. */
+  'clips.optimizeBoundaries'(p: { clipId: string }): Promise<{
+    clip: Clip
+    adjusted: boolean
+    startReason: string
+    endReason: string
+    leadIn: { applied: boolean; reason: string }
+    quality: {
+      before: { score: number; startReason: string; endReason: string }
+      after: { score: number; startReason: string; endReason: string }
+    }
+  }>
+
   // clips
   'clips.list'(p: { projectId: string }): Promise<Clip[]>
   'clips.createFromCandidate'(p: { candidateId: string }): Promise<Clip>
@@ -71,7 +120,7 @@ export interface ClipwrightApi {
   'clips.generateMetadata'(p: { id: string }): Promise<Clip>
 
   // renders
-  'renders.queue'(p: { clipId: string }): { renderId: string }
+  'renders.queue'(p: { clipId: string; preview?: boolean }): { renderId: string }
   'renders.list'(p: { projectId?: string }): Promise<RenderJob[]>
   'renders.cancel'(p: { id: string }): Promise<void>
   'renders.retry'(p: { id: string }): Promise<RenderJob>

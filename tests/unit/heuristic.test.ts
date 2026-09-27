@@ -3,6 +3,7 @@ import { runHeuristicAnalysis } from '@main/services/ai/heuristic'
 import { aggregateScore } from '@shared/candidates'
 import type { TranscriptSegment } from '@shared/types'
 import { SCORE_WEIGHTS } from '@shared/candidates'
+import { boundaryQuality, deadAirRatio, sentenceSpans } from '@shared/analysis/boundaries'
 
 const seg = (id: number, start: number, end: number, text: string): TranscriptSegment => ({
   id, startTime: start, endTime: end, text, speaker: null, confidence: null, words: null
@@ -58,17 +59,24 @@ describe('local heuristic analyzer (ADR-006: honest, deterministic, offline)', (
     }
   })
 
-  it('produces scores in 0–100 whose aggregate matches the shared weights', () => {
+  it('produces scores in 0–100 whose aggregate matches the shared weights + boundary/dead-air adjustment', () => {
     const candidates = runHeuristicAnalysis(SEGMENTS, OPTS)
+    const spans = sentenceSpans(SEGMENTS)
     for (const c of candidates) {
       for (const value of Object.values(c.scores)) {
         expect(value).toBeGreaterThanOrEqual(0)
         expect(value).toBeLessThanOrEqual(100)
       }
-      expect(c.overallScore).toBe(aggregateScore(c.scores))
-      // aggregate is a weighted mean of the eight dimensions
+      // aggregate is a weighted mean of the eight dimensions…
       const manual = Object.keys(SCORE_WEIGHTS).reduce((sum, key) => sum + (c.scores as never as Record<string, number>)[key] * SCORE_WEIGHTS[key as keyof typeof SCORE_WEIGHTS], 0)
-      expect(c.overallScore).toBe(Math.round(Math.min(100, Math.max(0, manual))))
+      const base = Math.round(Math.min(100, Math.max(0, manual)))
+      expect(base).toBe(aggregateScore(c.scores))
+      // …then adjusted by boundary quality and dead air (§42): clean sentence
+      // starts/ends rank higher, long non-speech stretches rank lower.
+      const boundary = boundaryQuality({ startTime: c.startTime, endTime: c.endTime }, spans)
+      const deadAir = deadAirRatio({ startTime: c.startTime, endTime: c.endTime }, SEGMENTS)
+      const adjusted = Math.max(0, Math.min(100, Math.round(base * (0.9 + 0.1 * boundary.score)) - Math.round(deadAir * 10)))
+      expect(c.overallScore).toBe(adjusted)
     }
   })
 

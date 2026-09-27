@@ -25,6 +25,8 @@ function makeClip(ctx: AppContext, projectId: string): string {
     id: crypto.randomUUID(), candidateId: null, projectId,
     startTime: 0, endTime: 10, aspectRatio: '9:16', cropMode: 'center', cropX: 0.5, zoom: 1,
     captionStyleId: 'classic', captionOverrides: {}, captionTextEdits: {},
+    captionCueSplits: {}, captionCueMerges: {}, captionTimingOffsets: {}, silenceCuts: [],
+    outputResolution: '1080p', outputQuality: 'standard', outputFps: 'source',
     title: 'clip', description: '', hashtags: [], cta: '', metadataProvider: null, status: 'draft'
   }).id
 }

@@ -57,12 +57,13 @@ async function invoke<T>(method: string, payload: unknown = {}): Promise<T> {
 }
 
 /** Build the URL for a media file the backend is allowed to stream. */
-export function mediaUrl(absolutePath: string | null | undefined): string {
+export function mediaUrl(absolutePath: string | null | undefined, opts: { proxy?: boolean } = {}): string {
   if (!absolutePath) return ''
+  const q = opts.proxy ? '?proxy=1' : ''
   if (isElectron) {
-    return `clipwright-media://local/${encodeURIComponent(absolutePath)}`
+    return `clipwright-media://local/${encodeURIComponent(absolutePath)}${q}`
   }
-  return `/api/media/stream?path=${encodeURIComponent(absolutePath)}`
+  return `/api/media/stream?path=${encodeURIComponent(absolutePath)}${q}`
 }
 
 /** Clipboard with graceful fallback (works in both transports). */
@@ -129,6 +130,10 @@ function wire(): ClipwrightApi {
     'projects.updateSettings': f('projects.updateSettings'),
     'media.importFile': f('media.importFile'),
     'media.importUrl': f('media.importUrl'),
+    'media.checkPlayback': f('media.checkPlayback'),
+    'media.renderProxy': f('media.renderProxy'),
+    'media.filmstrip': f('media.filmstrip'),
+    'media.waveform': f('media.waveform'),
     'media.pickSourceFile': f('media.pickSourceFile'),
     'media.pickTranscriptFile': f('media.pickTranscriptFile'),
     'transcript.get': f('transcript.get'),
@@ -138,6 +143,8 @@ function wire(): ClipwrightApi {
     'analysis.start': f('analysis.start'),
     'analysis.getCandidates': f('analysis.getCandidates'),
     'analysis.updateCandidate': f('analysis.updateCandidate'),
+    'analysis.detectSilence': f('analysis.detectSilence'),
+    'clips.optimizeBoundaries': f('clips.optimizeBoundaries'),
     'clips.list': f('clips.list'),
     'clips.createFromCandidate': f('clips.createFromCandidate'),
     'clips.update': f('clips.update'),

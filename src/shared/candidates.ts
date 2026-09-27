@@ -1,6 +1,7 @@
 import type { ClipCandidate, ScoreBreakdown, TranscriptSegment } from './types'
 import { getDurationRange, DURATION_TOLERANCE } from './constants'
 import { overlapRatio } from './utils/time'
+import { sentenceSpans, snapToSentenceBoundaries } from './analysis/boundaries'
 import type { z } from 'zod'
 import type { rawCandidateSchema, rawScoresSchema } from './schemas'
 
@@ -65,9 +66,29 @@ export function validateCandidate(
     return { rejection: `segment ids ${raw.startSegmentId}–${raw.endSegmentId} do not exist in the transcript` }
   }
 
-  const startTime = startSeg.startTime
-  const endTime = endSeg.endTime
+  let startTime = startSeg.startTime
+  let endTime = endSeg.endTime
   if (endTime <= startTime) return { rejection: 'zero or negative duration' }
+
+  // Boundary optimization (§34): snap raw segment ranges onto sentence
+  // boundaries so clips start at the beginning of a thought and end after it
+  // completes. Falls back to the raw range when snapping would break the
+  // duration gates.
+  const spans = sentenceSpans(segments)
+  if (spans.length > 0) {
+    const range0 = getDurationRange(ctx.durationPreset)
+    const snapped = snapToSentenceBoundaries(
+      { startTime, endTime },
+      spans,
+      { minLengthSec: Math.max(6, range0.min * (1 - DURATION_TOLERANCE)), maxLengthSec: range0.max * (1 + DURATION_TOLERANCE) }
+    )
+    if (ctx.sourceDuration != null && snapped.endTime > ctx.sourceDuration + 1.0) {
+      // keep raw
+    } else {
+      startTime = snapped.startTime
+      endTime = snapped.endTime
+    }
+  }
 
   if (ctx.sourceDuration != null && endTime > ctx.sourceDuration + 1.0) {
     return { rejection: 'range exceeds source duration' }
@@ -84,15 +105,22 @@ export function validateCandidate(
     return { rejection: `too long (${dur.toFixed(1)}s vs target ${range.min}–${range.max}s)` }
   }
 
-  const excerpt = raw.transcript?.trim() || excerptFor(segments, raw.startSegmentId, raw.endSegmentId)
+  // Re-anchor segment ids to the (possibly snapped) time range so the excerpt
+  // covers exactly what the clip will contain.
+  const anchoredStart = segments.find((s) => s.endTime > startTime) ?? startSeg
+  const anchoredEnd = [...segments].reverse().find((s) => s.startTime < endTime) ?? endSeg
+  const startId = Math.min(anchoredStart.id, anchoredEnd.id)
+  const endId = Math.max(anchoredStart.id, anchoredEnd.id)
+
+  const excerpt = raw.transcript?.trim() || excerptFor(segments, startId, endId)
   if (excerpt.replace(/\s/g, '').length < 20) return { rejection: 'selected range contains almost no speech' }
 
   return {
     candidate: {
       startTime,
       endTime,
-      startSegmentId: raw.startSegmentId,
-      endSegmentId: raw.endSegmentId,
+      startSegmentId: startId,
+      endSegmentId: endId,
       title: raw.title.trim().slice(0, 140),
       hook: raw.hook.trim().slice(0, 240),
       reason: raw.reason.trim().slice(0, 1200),

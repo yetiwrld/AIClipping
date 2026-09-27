@@ -183,10 +183,12 @@ describe('SRT document builder', () => {
 })
 
 describe('caption style catalog', () => {
-  it('exposes six distinct presets with unique ids', () => {
-    expect(CAPTION_STYLES.length).toBe(6)
+  it('exposes twelve distinct presets with unique ids across all ten categories', () => {
+    expect(CAPTION_STYLES.length).toBe(12)
     const ids = new Set(CAPTION_STYLES.map((s) => s.id))
-    expect(ids.size).toBe(6)
+    expect(ids.size).toBe(12)
+    const categories = new Set(CAPTION_STYLES.map((s) => s.category))
+    expect(categories.size).toBe(10)
   })
 
   it('getCaptionStyle falls back for unknown ids', () => {
