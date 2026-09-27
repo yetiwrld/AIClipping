@@ -30,9 +30,23 @@ export async function makeTestContext(): Promise<{ ctx: AppContext; cleanup: () 
   }
   const cleanup = async (): Promise<void> => {
     await ctx.shutdown().catch(() => undefined)
-    fs.rmSync(root, { recursive: true, force: true })
+    rmTempDir(root)
   }
   return { ctx, cleanup }
+}
+
+/**
+ * Remove a throwaway workspace. On Windows, Defender/indexers briefly hold
+ * handles on freshly-written media files (EPERM/EBUSY on rmSync) — Node's
+ * built-in retries absorb that. A leftover temp dir must never fail the
+ * suite: the OS reclaims %TEMP% eventually.
+ */
+export function rmTempDir(root: string): void {
+  try {
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 })
+  } catch (err) {
+    console.warn(`[test] could not remove temp workspace ${root} — ${String(err)}`)
+  }
 }
 
 export const FIXTURES_DIR = path.join(REPO_ROOT, 'tests', 'fixtures')

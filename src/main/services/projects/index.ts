@@ -96,7 +96,9 @@ export function deleteProject(ctx: AppContext, id: string, confirm: boolean): vo
     projectsRepo.delete(ctx.db, id)
   })
   try {
-    fs.rmSync(ctx.projectDir(id), { recursive: true, force: true })
+    // maxRetries/retryDelay: on Windows, antivirus/indexers can hold brief
+    // handles on freshly-written renders (EPERM); retrying absorbs that.
+    fs.rmSync(ctx.projectDir(id), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
   } catch (err) {
     ctx.logger.warn('projects', 'delete', `could not remove directory for ${id}`, String(err))
   }

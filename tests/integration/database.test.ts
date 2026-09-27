@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { makeTestContext } from '../helpers/context'
+import { makeTestContext, rmTempDir } from '../helpers/context'
 import type { AppContext } from '../../src/main/services/app-context'
 import {
   projectsRepo, segmentsRepo, candidatesRepo, clipsRepo, rendersRepo, tasksRepo, settingsRepo
@@ -120,7 +120,7 @@ describe('database: projects + state machine', () => {
       expect(segmentsRepo.listForProject(second.db, id)[0].text).toBe('persisted')
       await second.shutdown()
     } finally {
-      fs.rmSync(root, { recursive: true, force: true })
+      rmTempDir(root)
     }
   })
 })

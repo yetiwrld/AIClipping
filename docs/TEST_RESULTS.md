@@ -263,3 +263,20 @@ Re-verified in-sandbox from a cold start: `rm -rf tests/fixtures/media
 tests/fixtures/transcript.json && npm run fixtures` regenerates everything;
 full suite **203/203 PASS** (was 202 — the regenerated transcript yields one
 more segment-boundary case).
+
+## Session 5 addendum 2 — Windows EPERM on test teardown (2026-09-27)
+
+Second Windows run: **203/203 tests passed**; the only failure was the
+pipeline suite's `afterAll` — `fs.rmSync(tempWorkspace)` hit `EPERM`.
+Root cause: Windows Defender/indexing briefly holds handles on the
+freshly-written media files inside the temp workspace; Linux allows
+unlinking open files, so this never surfaced in-sandbox.
+
+- Test helper now removes temp workspaces with Node's built-in
+  `maxRetries: 10, retryDelay: 250` and warns instead of failing the suite
+  on a genuinely stuck handle (the OS reclaims %TEMP% regardless).
+- Same hardening applied to `deleteProject` in the APP (maxRetries 5 ×
+  200 ms): deleting a project right after a render no longer risks a
+  silently-undeleted folder on Windows.
+
+Re-verified in-sandbox: full suite 203/203 PASS.
