@@ -26,6 +26,7 @@ interface AppStore {
   appInfo: AppInfo | null
   settings: AppSettings | null
   dependencies: DependencyStatus[]
+  refreshDependencies(): Promise<void>
   providers: ProviderAvailability[]
   bootstrapped: boolean
   bootstrap(): Promise<void>
@@ -71,6 +72,19 @@ export const useAppStore = create<AppStore>((set, get) => ({
   dependencies: [],
   providers: [],
   bootstrapped: false,
+
+  /** Re-run the dependency probes (e.g. after installing faster-whisper). */
+  async refreshDependencies(): Promise<void> {
+    try {
+      const [dependencies, providers] = await Promise.all([
+        api['app.checkDependencies'](),
+        api['analysis.providers']()
+      ])
+      set({ dependencies, providers })
+    } catch {
+      /* keep the last known state */
+    }
+  },
 
   async bootstrap() {
     try {

@@ -44,7 +44,7 @@ describe('IPC payload validation (the explicit bridge contract)', () => {
       'app.getInfo', 'app.diagnostics', 'app.checkDependencies',
       'projects.list', 'projects.create', 'projects.get', 'projects.rename', 'projects.delete',
       'projects.storage', 'projects.updateSettings',
-      'media.importFile', 'media.importUrl', 'media.pickSourceFile', 'media.pickTranscriptFile',
+      'media.importFile', 'media.importUrl', 'media.checkUrl', 'media.pickSourceFile', 'media.pickTranscriptFile',
       'transcript.get', 'transcript.start', 'transcript.import',
       'analysis.providers', 'analysis.start', 'analysis.getCandidates', 'analysis.updateCandidate',
       'clips.list', 'clips.createFromCandidate', 'clips.update', 'clips.delete', 'clips.generateMetadata',

@@ -3,6 +3,7 @@ import type {
   AppEvent, Clip, ClipCandidate, Project, ProjectStorage, ProjectSummary, RenderJob, TaskInfo, TranscriptSegment
 } from '@shared/types'
 import { api } from '../api/client'
+import { useAppStore } from './app'
 
 /**
  * Working data for the currently open project + the global render queue and
@@ -138,6 +139,15 @@ export const useDataStore = create<DataStore>((set, get) => ({
           const tasks = existing === -1 ? [task, ...s.tasks] : s.tasks.map((t) => (t.id === task.id ? task : t))
           return { tasks }
         })
+        // B-012: background task failures (e.g. a URL import that needs
+        // yt-dlp) were silent — the reason only lived on the task row.
+        if (task.state === 'failed' && task.error) {
+          useAppStore.getState().toast({
+            level: 'error',
+            message: `${task.type === 'download' ? 'Import' : task.type} failed: ${task.error.message}`,
+            hint: task.error.hint ?? undefined
+          })
+        }
         break
       }
       case 'render:progress': {

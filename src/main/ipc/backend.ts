@@ -11,6 +11,7 @@ import {
   listProjects, projectStorage, renameProject, updateProjectSettings
 } from '../services/projects'
 import { getTranscript, importTranscript, runTranscription } from '../services/transcription'
+import { checkUrlProviders } from '../services/media/url-providers'
 import { getCandidates, listAnalysisProviders, runAnalysis, updateCandidateStatus } from '../services/ai/analysis'
 import { testAiProvider as testAiProviderService } from '../services/ai/test'
 import { createClipFromCandidate, deleteClip, generateClipMetadata, listClips, updateClip } from '../services/clips'
@@ -115,6 +116,12 @@ function runTask(taskId: string, fn: (report: import('../services/tasks/index').
       return { taskId: task.id }
     },
     'media.importUrl': (p: { projectId: string; url: string }): { taskId: string } => {
+      // Fail fast: if no provider can handle this URL, throw before creating
+      // a task, so the UI can clean up the placeholder project immediately.
+      const check = checkUrlProviders(p.url)
+      if (!check.ok) {
+        throw new AppError('URL_PROVIDER_UNAVAILABLE', check.reason ?? 'This URL cannot be imported.', check.hint ?? undefined)
+      }
       const task = tasks.create('download', p.projectId, { kind: 'url', projectId: p.projectId, url: p.url })
       runTask(task.id, async (report) => {
         report('downloading', null, 'Starting download')
@@ -122,6 +129,9 @@ function runTask(taskId: string, fn: (report: import('../services/tasks/index').
       })
       return { taskId: task.id }
     },
+    'media.checkUrl': (p: { url: string }): { ok: boolean; provider: string | null; label: string | null; reason: string | null; hint: string | null } =>
+      checkUrlProviders(p.url),
+
     'media.pickSourceFile': async (): Promise<{ filePath: string | null }> => {
       if (!host) throw new AppError('UNSUPPORTED_IN_PREVIEW', 'File picking is unavailable in the browser preview.', 'Use the upload control instead.')
       return { filePath: await host.pickFile(MEDIA_FILTERS) }

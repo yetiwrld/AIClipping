@@ -129,3 +129,9 @@ Living task journal. Phases reference `DEVELOPMENT_PLAN.md`.
 - [x] Docs: RUNNING_WINDOWS / API_SETUP / QA_REPORT / RELEASE_CHECKLIST
 - [ ] Windows machine: `npm run dist:win` + packaged smoke test (release checklist §2–4)
 - [ ] GonkaRouter live request (user enters key → Test connection)
+
+## Phase 14 — Whisper detection & URL import fixes — DONE
+- [x] B-011: multi-candidate Python probe + exact-path message + Re-check button
+- [x] B-012: task-failure toasts, URL pre-flight (media.checkUrl), fail-fast importUrl, placeholder cleanup
+- [x] 166/166 tests; typecheck + build clean; live verification of both flows
+- [ ] User: install faster-whisper on Windows + Re-check (docs/RUNNING_WINDOWS.md §Transcription)

@@ -212,6 +212,7 @@ export const ipcPayloads = {
     })
     .strict(),
 
+  'media.checkUrl': z.object({ url: z.string().min(1).max(2000) }).strict(),
   'media.importFile': z.object({ projectId: uuidSchema, filePath: z.string().min(1).max(1000).optional() }).strict(),
   'media.importUrl': z.object({ projectId: uuidSchema, url: z.string().url() }).strict(),
   'media.pickSourceFile': z.object({}).strict(),

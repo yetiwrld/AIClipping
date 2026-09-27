@@ -34,6 +34,15 @@ export interface ClipwrightApi {
   // media
   'media.importFile'(p: { projectId: string; filePath?: string }): Promise<Project>
   'media.importUrl'(p: { projectId: string; url: string }): Promise<Project>
+  /** Pre-flight URL check: which provider would handle this URL, and why not. No side effects. */
+  'media.checkUrl'(p: { url: string }): Promise<{
+    ok: boolean
+    provider: string | null
+    label: string | null
+    reason: string | null
+    hint: string | null
+  }>
+
   'media.pickSourceFile'(): { filePath: string | null }
   'media.pickTranscriptFile'(): { filePath: string | null }
 

@@ -3,6 +3,30 @@
 All notable changes to Clipwright Studio. Format loosely follows
 Keep a Changelog; versioning follows the app package version.
 
+## Unreleased — whisper detection & URL import fixes
+
+### Fixed
+- B-011: local-Whisper detection now probes every Python interpreter
+  (python / py / python3) instead of stopping at the first one found; the
+  status message names the exact interpreter path and the exact pip command;
+  Settings → Transcription gained a Re-check button (no app restart needed
+  after installing the package).
+- B-012: background task failures now raise an error toast with their
+  structured reason (URL imports that need yt-dlp were previously silent).
+
+### Added
+- `media.checkUrl` pre-flight IPC + live URL field hint: the dashboard says
+  whether a pasted link is importable before anything is created.
+- `media.importUrl` fails fast when no provider can handle the URL; the
+  placeholder project is cleaned up automatically.
+- URL imports name the project after the downloaded file instead of
+  "URL import".
+
+### Verified
+- 166/166 tests (6 new whisper-detection tests; IPC contract test extended);
+  live: direct mp4 URL import end-to-end, YouTube URL rejection with reason,
+  exact-interpreter dependency message.
+
 ## Unreleased — final QA & provider hardening
 
 ### Fixed

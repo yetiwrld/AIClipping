@@ -102,3 +102,40 @@ Format: symptom → cause → fix → regression test.
   Regression test: partial patch preserves sibling fields and persists.
 - **Verified**: live through the preview API — partial save keeps
   temperature/maxTokens/jsonMode and survives restart.
+
+## B-011 — local-Whisper detection gave up after the first Python
+- **Symptom**: user installed faster-whisper but the app kept reporting
+  "Python found (python) but the 'faster-whisper' package is not installed."
+- **Cause**: `detectLocalWhisper` returned on the FIRST Python found on PATH
+  (Windows: `python`) without ever probing `py`/`python3`. Windows machines
+  routinely have several interpreters (python.org, Microsoft Store alias, the
+  py launcher) and the package may be in any of them. Also: dependency
+  results were probed once at startup with no way to re-check without a
+  restart.
+- **Fix**: probe EVERY candidate (deduped by resolved path); prefer the first
+  that imports faster_whisper; when none do, the message names the exact
+  interpreter path(s) and the exact command to run
+  (`"<path>" -m pip install faster-whisper`). Settings → Transcription now
+  has a **Re-check** button (`app.refreshDependencies`) — no restart needed.
+- **Regression**: `tests/unit/whisper-detect.test.ts` (6 tests: next-candidate
+  fallback, same-binary dedupe, exact-path message, broken-stub tolerance).
+
+## B-012 — background task failures were silent (URL import "did nothing")
+- **Symptom**: importing a page URL (YouTube etc. without yt-dlp) created a
+  project and failed in the background task with no toast and no visible
+  reason — the user only saw a row stuck at "Empty"/"Import failed".
+- **Cause (three layers)**: (1) task failures only updated the task row, the
+  renderer never toasted them; (2) the provider check ran inside the
+  fire-and-forget task, so the import call itself returned success; (3) the
+  dashboard had no pre-flight check, so it created a placeholder project
+  even for URLs no provider could handle.
+- **Fix**: (1) `task:update` with `state: failed` now toasts the structured
+  error; (2) `media.importUrl` fails fast via a shared `checkUrlProviders()`
+  check before creating the task, and the dashboard removes the placeholder
+  project on that rejection; (3) new `media.checkUrl` IPC powers a live
+  hint under the URL field ("Importable via Direct media URL" / the exact
+  reason it is not). URL imports also now name the project after the file
+  instead of "URL import".
+- **Verified live**: direct .mp4 over HTTP imports end-to-end (ready,
+  1280×720); YouTube URL rejected with the yt-dlp explanation; a real
+  mid-download failure still toasts via the task path.

@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Film, Plus, Link2, Clock, MoreHorizontal, FolderOpen, Pencil, Trash2, Clapperboard } from 'lucide-react'
 import { api, isElectron, mediaUrl, errMessage } from '../../api/client'
 import { pickUpload } from '../../api/upload'
@@ -15,6 +15,7 @@ export function DashboardPage() {
   const [name, setName] = useState('')
   const [importing, setImporting] = useState<'file' | 'url' | null>(null)
   const [url, setUrl] = useState('')
+  const [urlCheck, setUrlCheck] = useState<{ ok: boolean; label: string | null; reason: string | null; hint: string | null } | null>(null)
 
   const activeTasks = data.tasks.filter((t) => t.state === 'running' || t.state === 'queued')
 
@@ -74,20 +75,56 @@ export function DashboardPage() {
   }
 
   async function handleImportUrl() {
-    if (!url.trim()) return
+    const trimmed = url.trim()
+    if (!trimmed) return
+    if (urlCheck && !urlCheck.ok) {
+      app.toast({ level: 'warn', message: urlCheck.reason ?? 'This URL cannot be imported.', hint: urlCheck.hint ?? undefined })
+      return
+    }
     setImporting('url')
+    let placeholderId: string | null = null
     try {
-      const id = await createProject('URL import')
+      // Name the project after the file/link, not a placeholder
+      let name = 'URL import'
+      try {
+        const u = new URL(trimmed)
+        const file = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() ?? '')
+        name = (file.replace(/\.[a-z0-9]{2,5}$/i, '') || u.hostname).slice(0, 80)
+      } catch { /* keep placeholder */ }
+      const id = await createProject(name)
       if (!id) return
-      await api['media.importUrl']({ projectId: id, url: url.trim() })
+      placeholderId = id
+      await api['media.importUrl']({ projectId: id, url: trimmed })
       await data.refreshProjects()
       app.openProject(id)
     } catch (err) {
+      // The import was rejected before it started — remove the empty
+      // placeholder project so nothing broken is left behind.
+      if (placeholderId) {
+        await api['projects.delete']({ id: placeholderId, confirm: true }).catch(() => undefined)
+        await data.refreshProjects()
+      }
       app.toast({ level: 'error', ...errMessage(err) })
     } finally {
       setImporting(null)
     }
   }
+
+  // Pre-flight URL check while typing: tells the user BEFORE creating a project
+  // whether the link is importable (direct media vs. page needing yt-dlp).
+  useEffect(() => {
+    const trimmed = url.trim()
+    if (!trimmed) {
+      setUrlCheck(null)
+      return
+    }
+    const timer = setTimeout(() => {
+      void api['media.checkUrl']({ url: trimmed })
+        .then((r) => setUrlCheck(r))
+        .catch(() => setUrlCheck(null))
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [url])
 
   const sorted = useMemo(() => [...data.projects].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), [data.projects])
 
@@ -126,7 +163,11 @@ export function DashboardPage() {
           {importing === 'url' ? 'Starting…' : 'Import from URL'}
         </button>
         <span className="tiny" style={{ flex: 1, minWidth: 200 }}>
-          Direct media links only. Sites that need extraction require yt-dlp on your system — the app never installs tools itself.
+          {urlCheck == null
+            ? 'Direct media links only. Sites that need extraction require yt-dlp on your system — the app never installs tools itself.'
+            : urlCheck.ok
+              ? <span className="status success"><span className="dot" /> Importable via {urlCheck.label}</span>
+              : <span className="status danger"><span className="dot" /> {urlCheck.reason} {urlCheck.hint}</span>}
         </span>
       </div>
 

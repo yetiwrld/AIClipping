@@ -238,6 +238,48 @@ export class YtDlpProvider implements VideoSourceProvider {
   }
 }
 
+/**
+ * Pre-flight check (no side effects): can any installed provider import
+ * this URL, and if not, why? Used by media.checkUrl (UI hint) and to fail
+ * media.importUrl fast, before a background task is ever created.
+ */
+export function checkUrlProviders(rawUrl: string): {
+  ok: boolean
+  provider: string | null
+  label: string | null
+  reason: string | null
+  hint: string | null
+} {
+  let parsed: URL
+  try {
+    parsed = parseUrlSafe(rawUrl)
+  } catch (err) {
+    const e = err as AppError
+    return { ok: false, provider: null, label: null, reason: e.message, hint: e.hint ?? null }
+  }
+  const providers = getSourceProviders()
+  const provider = providers.find((p) => p.canHandle(rawUrl))
+  if (provider) {
+    return { ok: true, provider: provider.id, label: provider.label, reason: null, hint: null }
+  }
+  const ytdlp = providers.find((p) => p.id === 'yt-dlp') as { isInstalled(): boolean } | undefined
+  const ext = path.extname(parsed.pathname).toLowerCase()
+  const looksLikePage = ext === '' || ['.html', '.htm', '.php', '.asp', '.aspx'].includes(ext)
+  return {
+    ok: false,
+    provider: null,
+    label: null,
+    reason: ytdlp && !ytdlp.isInstalled()
+      ? 'This looks like a web page link, not a direct media file — it needs yt-dlp, which is not installed.'
+      : 'No available provider can import this URL.',
+    hint: ytdlp && !ytdlp.isInstalled()
+      ? looksLikePage
+        ? 'Paste a direct link to the video file (ends in .mp4/.webm/…), or install yt-dlp and put it on your PATH to import from video sites. Only download content you have the right to use.'
+        : 'Install yt-dlp and make sure it is on your PATH, then retry.'
+      : 'Use a direct link to a media file (.mp4, .webm, …).'
+  }
+}
+
 export function getSourceProviders(): VideoSourceProvider[] {
   return [new YtDlpProvider(), new DirectHttpProvider()]
 }

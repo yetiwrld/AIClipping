@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import {
   Bot, AudioLines, Video, Captions, Package, HardDrive, Wrench, ShieldCheck,
   Download, FolderOpen, KeyRound, Trash2, TestTube2, Save
-} from 'lucide-react'
+, RefreshCw } from 'lucide-react'
 import { api, errMessage, isElectron } from '../../api/client'
 import { useAppStore } from '../../stores/app'
 import { Field, Switch, formatBytes, Spinner, ErrorBox } from '../../components/ui'
@@ -339,10 +339,34 @@ function TranscriptionSection() {
   const settings = app.settings!
   const t = settings.transcription
   const local = app.dependencies.find((d) => d.id === 'faster-whisper-local')
+  const [rechecking, setRechecking] = React.useState(false)
+
+  async function recheck() {
+    setRechecking(true)
+    await app.refreshDependencies()
+    setRechecking(false)
+    const fresh = useAppStore.getState().dependencies.find((d) => d.id === 'faster-whisper-local')
+    app.toast(
+      fresh?.available
+        ? { level: 'success', message: 'Local Whisper is now available.' }
+        : { level: 'warn', message: 'Still not detected.', hint: fresh?.message }
+    )
+  }
 
   return (
     <div className="settings-section stack">
       <div className="section-title">Transcription</div>
+      {local && !local.available && (
+        <div className="error-box">
+          <div className="error-title">{local.message}</div>
+          <div className="field-hint">After installing, press Re-check — no app restart needed.</div>
+          <div style={{ marginTop: 8 }}>
+            <button className="btn sm" onClick={() => void recheck()} disabled={rechecking}>
+              {rechecking ? <Spinner size={11} /> : <RefreshCw size={12} />} {rechecking ? 'Checking…' : 'Re-check'}
+            </button>
+          </div>
+        </div>
+      )}
       <Field label="Default provider">
         <select className="select" value={t.providerId} onChange={(e) => void app.saveSettings({ transcription: { providerId: e.target.value } })}>
           <option value="import-file">Import transcript file (offline)</option>

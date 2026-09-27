@@ -198,3 +198,16 @@ run book alongside the existing manual checks.
 Bugs fixed this session: B-010 (settings merge — provider saves were broken),
 superficial provider test, weak response validation, Bearer-only auth,
 400-only JSON fallback, base-URL schema hole, double-submit windows.
+
+
+---
+
+## Whisper detection & URL import fixes (2026-09-27, session 4)
+
+| Gate | Result |
+| --- | --- |
+| `npm test` | **166/166** (+6 whisper-detect unit tests, contract list updated for `media.checkUrl`) |
+| `npm run typecheck` / `npm run build` | clean |
+| Live: direct .mp4 URL import (local HTTP) | project `ready`, 1280×720, source_type=url |
+| Live: YouTube URL pre-flight/import | rejected with exact reason + yt-dlp hint, no task, no leftover project |
+| Live: dependency message | exact interpreter path(s) + exact pip command |

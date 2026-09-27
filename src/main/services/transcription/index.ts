@@ -26,23 +26,42 @@ export function pythonCandidates(): string[] {
 }
 
 export async function detectLocalWhisper(): Promise<{ python: string | null; installed: boolean; message: string }> {
+  // Probe EVERY candidate interpreter (python / py / python3) — Windows boxes
+  // routinely have several (python.org install, Microsoft Store alias, the py
+  // launcher), and faster-whisper may be installed in any one of them.
+  // B-011: the old code stopped at the first candidate found on PATH and
+  // reported "not installed" even when another interpreter had the package.
+  const found: Array<{ command: string; binary: string }> = []
   for (const python of pythonCandidates()) {
     const binary = whichSync(python)
     if (!binary) continue
-    const { code, stdout } = await runProcess(binary, ['-c', 'import faster_whisper; print("ok")'], { timeoutMs: 15000 })
-    if (code === 0 && stdout.includes('ok')) {
-      return { python: binary, installed: true, message: `Local Whisper available (${python})` }
-    }
-    return {
-      python: binary,
-      installed: false,
-      message: `Python found (${python}) but the 'faster-whisper' package is not installed.`,
+    if (found.some((f) => f.binary === binary)) continue // same interpreter via two names
+    found.push({ command: python, binary })
+    try {
+      const { code, stdout } = await runProcess(binary, ['-c', 'import faster_whisper; print("ok")'], { timeoutMs: 15000 })
+      if (code === 0 && stdout.includes('ok')) {
+        return { python: binary, installed: true, message: `Local Whisper available (${binary})` }
+      }
+    } catch {
+      /* this interpreter is broken/stubbed — try the next candidate */
     }
   }
+  if (found.length === 0) {
+    return {
+      python: null,
+      installed: false,
+      message: 'Python was not found on this system. Install Python 3.9+ from python.org (and tick "Add to PATH"), then: python -m pip install faster-whisper'
+    }
+  }
+  const first = found[0]
+  const extra =
+    found.length > 1
+      ? ` (also found: ${found.slice(1).map((f) => `"${f.binary}"`).join(', ')} — the package must go into ONE of them)`
+      : ''
   return {
-    python: null,
+    python: first.binary,
     installed: false,
-    message: 'Python was not found on this system.',
+    message: `Python found at "${first.binary}" but the 'faster-whisper' package is not installed there${extra}. Run exactly: "${first.binary}" -m pip install faster-whisper`,
   }
 }
 
