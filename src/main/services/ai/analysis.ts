@@ -65,20 +65,42 @@ export async function runAnalysis(ctx: AppContext, opts: AnalysisOptions): Promi
       maxSeconds: range.max,
       maxCandidates: maxCandidates * 2 // dedup + bucketing will trim to target
     })
-    validated = heuristic.map((h) => ({
-      startTime: h.startTime,
-      endTime: h.endTime,
-      startSegmentId: h.startSegmentId,
-      endSegmentId: h.endSegmentId,
-      title: h.title,
-      hook: h.hook,
-      reason: h.reason,
-      clipType: h.clipType,
-      transcriptExcerpt: excerptFor(segments, h.startSegmentId, h.endSegmentId),
-      scores: h.scores,
-      overallScore: h.overallScore,
-      scoreExplanation: h.scoreExplanation
-    }))
+    // Same hard gate as the AI path (§2 fix): heuristic candidates must pass
+    // validateCandidate — source-duration, duration-preset and transcript
+    // checks. A heuristic candidate that runs past the end of the source is
+    // dropped here, never shown to the user.
+    const validCtx = {
+      segments,
+      sourceDuration: project.duration,
+      durationPreset: preset as 'short' | 'medium' | 'long' | 'mixed'
+    }
+    for (const h of heuristic) {
+      const result = validateCandidate(
+        {
+          startSegmentId: h.startSegmentId,
+          endSegmentId: h.endSegmentId,
+          title: h.title,
+          hook: h.hook,
+          reason: h.reason,
+          clipType: h.clipType,
+          transcript: excerptFor(segments, h.startSegmentId, h.endSegmentId)
+        },
+        validCtx
+      )
+      if ('candidate' in result) {
+        validated.push({
+          ...result.candidate,
+          startTime: result.candidate.startTime,
+          endTime: result.candidate.endTime,
+          scores: h.scores,
+          overallScore: h.overallScore,
+          scoreExplanation: h.scoreExplanation
+        })
+      } else {
+        rejected.push(result.rejection)
+        ctx.logger.warn('analysis', 'heuristic.candidate.rejected', result.rejection)
+      }
+    }
     opts.onEvent('scoring', 0.8, 'Scoring candidates')
   } else {
     providerLabel = opts.providerId

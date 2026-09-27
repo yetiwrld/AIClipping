@@ -21,11 +21,26 @@ export interface MediaInfo {
   audioCodec: string | null
   sizeBytes: number
   rotation: number
+  /** Extra probe facts for the playback diagnostics panel (§9). */
+  pixelFormat: string | null
+  sampleRate: number | null
+  channels: number | null
+  container: string | null
+}
+
+export interface ContentRect {
+  left: number
+  top: number
+  width: number
+  height: number
 }
 
 interface FfprobeStream {
   codec_type?: string
   codec_name?: string
+  pix_fmt?: string
+  sample_rate?: number
+  channels?: number
   width?: number
   height?: number
   avg_frame_rate?: string
@@ -36,7 +51,7 @@ interface FfprobeStream {
 
 interface FfprobeOutput {
   streams?: FfprobeStream[]
-  format?: { duration?: string; size?: string }
+  format?: { duration?: string; size?: string; format_name?: string }
 }
 
 export interface MediaBinaries {
@@ -137,7 +152,91 @@ export async function inspectMedia(ffprobePath: string, filePath: string): Promi
     videoCodec: video.codec_name ?? null,
     audioCodec: audio?.codec_name ?? null,
     sizeBytes: stat.size,
-    rotation
+    rotation,
+    pixelFormat: video.pix_fmt ?? null,
+    sampleRate: audio?.sample_rate ?? null,
+    channels: audio?.channels ?? null,
+    container: parsed.format?.format_name?.split(',')[0] ?? null
+  }
+}
+
+/**
+ * Detect the real content area inside the frame (baked-in letterbox /
+ * pillarbox bars) using FFmpeg cropdetect. Samples several points across the
+ * duration; returns the rect only when the samples agree — conservative, so
+ * dark scenes never trigger a false crop. Rotation ≠ 0/180 → null (decoded
+ * vs display coordinates differ; never guess).
+ */
+export async function detectContentRect(
+  ffmpegPath: string,
+  filePath: string,
+  duration: number,
+  frameWidth: number,
+  frameHeight: number,
+  rotation: number
+): Promise<ContentRect | null> {
+  if (rotation !== 0 && rotation !== 180) return null
+  if (duration < 2 || frameWidth < 16 || frameHeight < 16) return null
+
+  const samples = [0.1, 0.3, 0.5, 0.7, 0.9]
+    .map((f) => Math.min(duration - 0.2, Math.max(0, duration * f)))
+    .filter((t, idx, arr) => arr.indexOf(t) === idx)
+
+  const rects: ContentRect[] = []
+  for (const t of samples) {
+    try {
+      const res = await runProcess(ffmpegPath, [
+        '-hide_banner', '-nostats',
+        '-ss', t.toFixed(3),
+        '-i', filePath,
+        '-frames:v', '6',
+        '-vf', 'cropdetect=limit=24:round=2',
+        '-f', 'rawvideo', '-pix_fmt', 'gray',
+        '-'
+      ], { timeoutMs: 30_000 })
+      // cropdetect reports on stderr; take the last reported rect
+      const crops = [...(res.stderr + res.stdout).matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g)]
+      const last = crops[crops.length - 1]
+      if (!last) continue
+      const [, w, h, x, y] = last.map((v) => parseInt(v, 10))
+      if (w >= 16 && h >= 16) rects.push({ left: x, top: y, width: w, height: h })
+    } catch {
+      /* sampling failure on one point is fine */
+    }
+  }
+  if (rects.length < Math.ceil(samples.length * 0.6)) return null
+
+  // consensus: rects within 2px of the median area/position
+  const same = (a: ContentRect, b: ContentRect) =>
+    Math.abs(a.left - b.left) <= 2 && Math.abs(a.top - b.top) <= 2 &&
+    Math.abs(a.width - b.width) <= 2 && Math.abs(a.height - b.height) <= 2
+  let best: ContentRect | null = null
+  let bestCount = 0
+  for (const r of rects) {
+    const count = rects.filter((o) => same(r, o)).length
+    if (count > bestCount) {
+      best = r
+      bestCount = count
+    }
+  }
+  if (!best || bestCount < Math.ceil(rects.length * 0.6)) return null
+
+  // meaningful only when bars actually exist (≥ 2% of a dimension)
+  const barX = best.left + (frameWidth - best.left - best.width)
+  const barY = best.top + (frameHeight - best.top - best.height)
+  if (barX < frameWidth * 0.02 && barY < frameHeight * 0.02) {
+    return { left: 0, top: 0, width: frameWidth, height: frameHeight } // no bars
+  }
+  // even dimensions for yuv420p; cropdetect (round=2) can round x down past
+  // the frame edge, so clamp the rect into the frame before returning.
+  const even = (n: number) => Math.max(2, Math.floor(n / 2) * 2)
+  const left = Math.min(even(best.left), even(frameWidth) - 2)
+  const top = Math.min(even(best.top), even(frameHeight) - 2)
+  return {
+    left,
+    top,
+    width: Math.min(even(best.width), even(frameWidth) - left),
+    height: Math.min(even(best.height), even(frameHeight) - top)
   }
 }
 

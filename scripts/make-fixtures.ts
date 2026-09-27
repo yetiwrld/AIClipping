@@ -140,9 +140,34 @@ async function makeSilenceVideo(): Promise<void> {
   console.log('silence.mp4 — 8.5s (tone 3s → silence 2.5s → tone 3s)')
 }
 
+/**
+ * The §22 forensic source: a portrait 1080x1920 video whose real content is
+ * 1080x1440 at y=246, padded with black bars top+bottom — exactly the shape
+ * of a mis-exported vertical clip. Bars must NEVER survive a re-render.
+ */
+async function makeForensicVideo(): Promise<void> {
+  const target = path.join(OUT_MEDIA, 'forensic.mp4')
+  // testsrc2 1080x1440 padded into 1080x1920: 246px bars top and bottom
+  // (246 + 1440 + 234 = 1920; pad centers when only one dim is given, so we
+  // pad explicitly top/bottom asymmetric: 246/234 to match the user case).
+  await run(FFMPEG, [
+    '-y', '-hide_banner', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'testsrc2=size=1080x1440:rate=24000/1001',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=44100',
+    '-t', '10',
+    '-vf', 'pad=1080:1920:0:246:black',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-ar', '44100',
+    '-shortest',
+    target
+  ])
+  console.log('forensic.mp4 — 10s 1080x1920 with 1080x1440 content at y=246 (baked-in bars)')
+}
+
 async function main(): Promise<void> {
   await makeVideo()
   await makeSilenceVideo()
+  await makeForensicVideo()
   makeTranscript()
   console.log('\nFixtures ready in tests/fixtures/')
 }

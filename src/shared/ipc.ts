@@ -30,6 +30,12 @@ export interface ClipwrightApi {
     id: string
     settings: { durationPreset?: 'short' | 'medium' | 'long' | 'mixed'; maxCandidates?: number }
   }): Promise<Project>
+  /**
+   * Relink a project to its moved source file (§13-14). The new file is
+   * inspected and re-registered; a mismatched file is rejected, never
+   * silently substituted.
+   */
+  'projects.relinkSource'(p: { id: string; filePath: string }): Promise<Project>
 
   // media
   'media.importFile'(p: { projectId: string; filePath?: string }): Promise<Project>
@@ -48,10 +54,12 @@ export interface ClipwrightApi {
 
   /** Playback compatibility check + existing proxy status for the project source. */
   'media.checkPlayback'(p: { projectId: string }): Promise<{
-    verdict: 'native' | 'proxy' | 'audio-only'
+    verdict: 'native' | 'proxy' | 'audio-only' | 'missing'
     reason: string
     proxyExists: boolean
     proxyPath: string | null
+    sourceExists: boolean
+    sourcePath: string | null
   }>
   /** Queue a preview-proxy transcode (task). */
   'media.renderProxy'(p: { projectId: string }): { taskId: string }
@@ -118,6 +126,11 @@ export interface ClipwrightApi {
   'clips.update'(p: { id: string; patch: Partial<Omit<Clip, 'id' | 'projectId' | 'candidateId' | 'status' | 'createdAt' | 'updatedAt'>> }): Promise<Clip>
   'clips.delete'(p: { id: string }): Promise<void>
   'clips.generateMetadata'(p: { id: string }): Promise<Clip>
+  /**
+   * Analyze the clip for smart crop: FFmpeg scene detection + per-shot
+   * saliency windows, stored as crop keyframes (task with progress).
+   */
+  'clips.analyzeSmartCrop'(p: { clipId: string }): { taskId: string }
 
   // renders
   'renders.queue'(p: { clipId: string; preview?: boolean }): { renderId: string }

@@ -40,6 +40,7 @@ export function createClipFromCandidate(ctx: AppContext, candidateId: string): C
     captionCueMerges: {},
     captionTimingOffsets: {},
     silenceCuts: [],
+    smartCropKeyframes: [],
     outputResolution: settings.video.defaultResolution,
     outputQuality: settings.video.defaultQuality,
     outputFps: 'source',

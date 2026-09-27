@@ -43,14 +43,14 @@ describe('IPC payload validation (the explicit bridge contract)', () => {
     const expected = [
       'app.getInfo', 'app.diagnostics', 'app.checkDependencies',
       'projects.list', 'projects.create', 'projects.get', 'projects.rename', 'projects.delete',
-      'projects.storage', 'projects.updateSettings',
+      'projects.storage', 'projects.updateSettings', 'projects.relinkSource',
       'media.importFile', 'media.importUrl', 'media.checkUrl', 'media.pickSourceFile', 'media.pickTranscriptFile',
       'media.checkPlayback', 'media.renderProxy', 'media.filmstrip', 'media.waveform',
       'transcript.get', 'transcript.start', 'transcript.import',
       'analysis.providers', 'analysis.start', 'analysis.getCandidates', 'analysis.updateCandidate',
       'analysis.detectSilence',
       'clips.list', 'clips.createFromCandidate', 'clips.update', 'clips.delete', 'clips.generateMetadata',
-      'clips.optimizeBoundaries',
+      'clips.optimizeBoundaries', 'clips.analyzeSmartCrop',
       'renders.queue', 'renders.list', 'renders.cancel', 'renders.retry',
       'tasks.list', 'tasks.cancel', 'tasks.resume', 'tasks.discard',
       'settings.get', 'settings.update', 'settings.setSecret', 'settings.deleteSecret',
@@ -93,6 +93,7 @@ describe('app settings schema', () => {
       transcription: { providerId: 'import-file', language: 'auto', whisperModel: 'base', whisperCompute: 'int8' },
       video: {
         targetDurationPreset: 'medium', crf: 20, renderPreset: 'veryfast', useHardwareEncoder: true, audioNormalize: true,
+        codec: 'h264',
         defaultResolution: '1080p', defaultQuality: 'standard', hardwareEncoding: 'auto',
         silence: { mode: 'auto', minSilenceMs: 700, paddingMs: 130, maxCutSec: 8 }
       },

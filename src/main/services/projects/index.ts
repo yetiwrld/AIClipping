@@ -4,7 +4,7 @@ import { AppError } from '@shared/errors'
 import type { Project, ProjectSettings, ProjectStorage, ProjectSummary } from '@shared/types'
 import type { AppContext } from '../app-context'
 import { projectsRepo, projectSummaries, segmentsRepo, resolveDurationPreset } from '../database/repositories'
-import { getBinaries, inspectMedia, isSupportedMediaFile } from '../media/inspect'
+import { detectContentRect, getBinaries, inspectMedia, isSupportedMediaFile } from '../media/inspect'
 import { generateThumbnail } from '../media/thumbnails'
 import { getSourceProviders, fetchUrlMeta, parseUrlSafe } from '../media/url-providers'
 
@@ -118,6 +118,113 @@ export function updateProjectSettings(ctx: AppContext, id: string, patch: Partia
   return updated
 }
 
+// ----------------------------------------------------------------- relink --
+
+/**
+ * Relink a project whose source file was moved or renamed (§13-14).
+ * The replacement is INSPECTED and compared against the registered source:
+ * a different file is rejected with specifics — never silently substituted.
+ * On success the new file is copied into the project (same rule as import:
+ * originals are copied in, referenced files are never used directly).
+ */
+export async function relinkSource(ctx: AppContext, projectId: string, filePath: string): Promise<Project> {
+  const project = projectsRepo.get(ctx.db, projectId)
+  if (!project) throw new AppError('PROJECT_NOT_FOUND', 'That project no longer exists.')
+  if (!project.sourcePath) {
+    throw new AppError('PROJECT_HAS_NO_SOURCE', 'This project has no source media to relink.', 'Import media first.')
+  }
+
+  if (!fs.existsSync(filePath)) {
+    throw new AppError('FILE_NOT_FOUND', `The file "${path.basename(filePath)}" does not exist.`, 'Check the location and try again.')
+  }
+  if (!isSupportedMediaFile(filePath)) {
+    throw new AppError('UNSUPPORTED_FORMAT', `"${path.basename(filePath)}" is not a supported media file.`, 'Supported: MP4, MOV, MKV, WebM, AVI, M4V, MPG, WMV plus common audio formats.')
+  }
+
+  const { ffmpeg, ffprobe } = await getBinaries(ctx)
+  const info = await inspectMedia(ffprobe.path, filePath)
+
+  // Substitution guard: same file (moved/renamed) matches duration and
+  // resolution closely. Anything else is a different file → refuse.
+  if (project.duration != null && Math.abs(info.duration - project.duration) > Math.max(1.5, project.duration * 0.05)) {
+    throw new AppError(
+      'RELINK_MISMATCH',
+      `That file is ${(info.duration / 60).toFixed(1)} min long, but this project's source is ${(project.duration / 60).toFixed(1)} min.`,
+      'Relinking only accepts the SAME media file at a new location — import it as a new project instead.'
+    )
+  }
+  if (project.width != null && project.height != null && (Math.abs(info.width - project.width) > 2 || Math.abs(info.height - project.height) > 2)) {
+    throw new AppError(
+      'RELINK_MISMATCH',
+      `That file is ${info.width}×${info.height}, but this project's source is ${project.width}×${project.height}.`,
+      'Relinking only accepts the SAME media file at a new location — import it as a new project instead.'
+    )
+  }
+
+  const oldPath = project.sourcePath
+  const ext = path.extname(filePath).toLowerCase() || '.mp4'
+  const dest = path.join(ctx.projectDir(projectId), 'source', `source${ext}`)
+  const destChanged = path.resolve(dest) !== path.resolve(oldPath)
+  if (destChanged) {
+    await streamCopy(filePath, dest)
+  }
+
+  const storedInfo = destChanged ? await inspectMedia(ffprobe.path, dest) : info
+  let content: { left: number; top: number; width: number; height: number } | null = null
+  try {
+    content = await detectContentRect(ffmpeg.path, dest, storedInfo.duration, storedInfo.width, storedInfo.height, storedInfo.rotation)
+  } catch {
+    /* non-fatal */
+  }
+
+  projectsRepo.update(ctx.db, projectId, {
+    source_type: 'file',
+    source_path: dest,
+    source_filename: path.basename(filePath),
+    status: 'ready',
+    status_message: storedInfo.hasAudio ? null : 'No audio track — transcription needs audio. Import a transcript file to continue.',
+    duration: storedInfo.duration,
+    width: storedInfo.width,
+    height: storedInfo.height,
+    fps: storedInfo.fps,
+    has_audio: storedInfo.hasAudio ? 1 : 0,
+    video_codec: storedInfo.videoCodec,
+    audio_codec: storedInfo.audioCodec,
+    size_bytes: storedInfo.sizeBytes,
+    rotation: storedInfo.rotation,
+    content_left: content?.left ?? null,
+    content_top: content?.top ?? null,
+    content_width: content?.width ?? null,
+    content_height: content?.height ?? null
+  })
+
+  // Remove the stale preview proxy only when it can no longer match the file.
+  try {
+    const { proxyPathFor } = await import('../media/analysis')
+    const proxy = proxyPathFor(ctx, projectId)
+    if (fs.existsSync(proxy) && Math.abs(storedInfo.duration - (project.duration ?? storedInfo.duration)) > 1) {
+      fs.rmSync(proxy, { force: true })
+    }
+  } catch {
+    /* best effort */
+  }
+
+  try {
+    await generateThumbnail(ffmpeg.path, dest, path.join(ctx.projectDir(projectId), 'thumbnails', 'source.jpg'), {
+      at: Math.min(storedInfo.duration * 0.25, 60)
+    })
+  } catch {
+    /* best effort */
+  }
+
+  const updated = projectsRepo.get(ctx.db, projectId)
+  if (!updated) throw new AppError('PROJECT_NOT_FOUND', 'That project no longer exists.')
+  projectsRepo.writeProjectJson(ctx, updated)
+  ctx.events.publish({ type: 'project:update', project: updated })
+  ctx.logger.info('projects', 'relink', `id=${projectId} file=${path.basename(filePath)}`)
+  return updated
+}
+
 // ------------------------------------------------------------------ import --
 
 export interface ImportProgress {
@@ -168,6 +275,18 @@ export async function importMediaFile(ctx: AppContext, projectId: string, filePa
     // Re-inspect the stored copy (authoritative)
     const storedInfo = await inspectMedia(ffprobe.path, dest)
 
+    // Real content area (baked-in bar detection) — a failed probe is
+    // non-fatal; the app falls back to treating the whole frame as content.
+    let content: { left: number; top: number; width: number; height: number } | null = null
+    try {
+      content = await detectContentRect(ffmpeg.path, dest, storedInfo.duration, storedInfo.width, storedInfo.height, storedInfo.rotation)
+      if (content && (content.width !== storedInfo.width || content.height !== storedInfo.height)) {
+        ctx.logger.info('projects', 'import', `content area ${content.width}x${content.height} at ${content.left},${content.top} (bars detected)`)
+      }
+    } catch (err) {
+      ctx.logger.warn('projects', 'import', 'content-rect detection failed', String(err))
+    }
+
     projectsRepo.update(ctx.db, projectId, {
       source_type: 'file',
       source_path: dest,
@@ -182,6 +301,10 @@ export async function importMediaFile(ctx: AppContext, projectId: string, filePa
       audio_codec: storedInfo.audioCodec,
       size_bytes: storedInfo.sizeBytes,
       rotation: storedInfo.rotation,
+      content_left: content?.left ?? null,
+      content_top: content?.top ?? null,
+      content_width: content?.width ?? null,
+      content_height: content?.height ?? null,
       status: 'ready',
       status_message: storedInfo.hasAudio ? null : 'No audio track — transcription needs audio. Import a transcript file to continue.'
     })
@@ -258,6 +381,13 @@ export async function importMediaUrl(ctx: AppContext, projectId: string, url: st
     const info = await inspectMedia(ffprobe.path, dest)
     const meta = await fetchUrlMeta(url).catch(() => null)
 
+    let content: { left: number; top: number; width: number; height: number } | null = null
+    try {
+      content = await detectContentRect(ffmpeg.path, dest, info.duration, info.width, info.height, info.rotation)
+    } catch {
+      /* non-fatal */
+    }
+
     projectsRepo.update(ctx.db, projectId, {
       source_type: 'url',
       source_path: dest,
@@ -272,6 +402,10 @@ export async function importMediaUrl(ctx: AppContext, projectId: string, url: st
       audio_codec: info.audioCodec,
       size_bytes: info.sizeBytes,
       rotation: info.rotation,
+      content_left: content?.left ?? null,
+      content_top: content?.top ?? null,
+      content_width: content?.width ?? null,
+      content_height: content?.height ?? null,
       status: 'ready',
       status_message: info.hasAudio ? null : 'No audio track — transcription needs audio. Import a transcript file to continue.'
     })

@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import {
   Bot, AudioLines, Video, Captions, Package, HardDrive, Wrench, ShieldCheck,
   Download, FolderOpen, KeyRound, Trash2, TestTube2, Save
-, RefreshCw } from 'lucide-react'
+, RefreshCw, ChevronRight } from 'lucide-react'
 import { api, errMessage, isElectron } from '../../api/client'
 import { useAppStore } from '../../stores/app'
 import { Field, Switch, formatBytes, Spinner, ErrorBox } from '../../components/ui'
@@ -445,6 +445,29 @@ function VideoSection() {
           Hardware encoders: NVENC / QSV / AMF / VideoToolbox. In Auto mode a failed hardware render is retried on CPU automatically.
         </div>
       </Field>
+      <details className="inspector-section">
+        <summary>
+          Advanced export <ChevronRight size={13} className="chev" />
+        </summary>
+        <div className="inspector-body stack" style={{ gap: 10 }}>
+          <Field
+            label="Video codec"
+            hint="H.264 plays everywhere. HEVC (H.265) is ~30% smaller but older editors/platforms may reject it — choose it only when you know the target supports it."
+          >
+            <select
+              className="select"
+              value={v.codec ?? 'h264'}
+              onChange={(e) => void app.saveSettings({ video: { codec: e.target.value as 'h264' | 'hevc' } })}
+            >
+              <option value="h264">H.264 (libx264) — maximum compatibility</option>
+              <option value="hevc">HEVC / H.265 (libx265) — smaller files</option>
+            </select>
+          </Field>
+          <div className="field-hint">
+            Applies to final renders. Quick preview renders always use H.264 for speed, and hardware encoders are H.264-only.
+          </div>
+        </div>
+      </details>
       <Switch
         label="Normalize loudness (EBU R128)"
         hint="Consistent -16 LUFS across clips — recommended for social platforms."

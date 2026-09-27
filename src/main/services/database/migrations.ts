@@ -159,6 +159,17 @@ ALTER TABLE clips ADD COLUMN output_quality TEXT NOT NULL DEFAULT 'standard';
 ALTER TABLE clips ADD COLUMN output_fps TEXT NOT NULL DEFAULT 'source';
 ALTER TABLE renders ADD COLUMN preview INTEGER NOT NULL DEFAULT 0;
 `
+  },
+  {
+    version: 3,
+    name: 'content rect (black-bar detection), smart crop keyframes, codec setting',
+    up: `
+ALTER TABLE projects ADD COLUMN content_left INTEGER;
+ALTER TABLE projects ADD COLUMN content_top INTEGER;
+ALTER TABLE projects ADD COLUMN content_width INTEGER;
+ALTER TABLE projects ADD COLUMN content_height INTEGER;
+ALTER TABLE clips ADD COLUMN smart_crop_keyframes TEXT NOT NULL DEFAULT '[]';
+`
   }
 ]
 

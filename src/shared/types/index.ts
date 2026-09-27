@@ -43,6 +43,8 @@ export interface Project {
   audioCodec: string | null
   sizeBytes: number | null
   rotation: number
+  /** Real content area inside the frame (FFmpeg cropdetect) — bars excluded. */
+  contentRect: { left: number; top: number; width: number; height: number } | null
   status: ProjectStatus
   statusMessage: string | null
   settings: ProjectSettings
@@ -152,7 +154,13 @@ export interface AnalysisSummary {
 
 // ----------------------------------------------------------------- clips ---
 
-export type CropMode = 'center' | 'top' | 'bottom' | 'manual'
+export type CropMode =
+  | 'fit' // show the whole content, letterbox if aspects differ (user's explicit choice)
+  | 'center' // fill: crop content to the target ratio, centered
+  | 'top' // fill with top bias (taller sources)
+  | 'bottom' // fill with bottom bias (taller sources)
+  | 'smart' // shot-aware saliency crop (real FFmpeg scene + frame analysis)
+  | 'manual' // fill with a user-dragged focus point
 export type AspectRatioId = '9:16' | '1:1' | '4:5' | '16:9'
 
 export type OutputResolutionId = '720p' | '1080p' | '1440p' | '2160p'
@@ -195,6 +203,8 @@ export interface Clip {
   captionTimingOffsets: Record<string, number>
   /** Removed silence intervals in SOURCE time — never modified in place. */
   silenceCuts: Array<{ start: number; end: number }>
+  /** Per-shot crop windows for 'smart' mode (source pixel coords, source time). */
+  smartCropKeyframes: Array<{ start: number; end: number; x: number; y: number; w: number; h: number }>
   /** Output resolution tier (short side). */
   outputResolution: OutputResolutionId
   /** Encoder quality tier. */
@@ -241,7 +251,7 @@ export interface RenderJob {
 
 // ---------------------------------------------------------------- tasks ----
 
-export type TaskType = 'download' | 'transcribe' | 'analyze' | 'render' | 'thumbnail' | 'proxy'
+export type TaskType = 'download' | 'transcribe' | 'analyze' | 'render' | 'thumbnail' | 'proxy' | 'smartcrop'
 export type TaskState = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
 
 export interface TaskInfo {
@@ -307,6 +317,8 @@ export interface VideoSettings {
   crf: number
   useHardwareEncoder: boolean
   audioNormalize: boolean
+  /** Output video codec (advanced). H.264 is the safe default everywhere. */
+  codec: 'h264' | 'hevc'
   defaultResolution: OutputResolutionId
   defaultQuality: OutputQualityId
   hardwareEncoding: 'auto' | 'cpu' | 'hardware'

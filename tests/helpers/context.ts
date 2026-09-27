@@ -52,12 +52,14 @@ export function rmTempDir(root: string): void {
 export const FIXTURES_DIR = path.join(REPO_ROOT, 'tests', 'fixtures')
 export const SAMPLE_VIDEO = path.join(FIXTURES_DIR, 'media', 'sample.mp4')
 export const SILENCE_VIDEO = path.join(FIXTURES_DIR, 'media', 'silence.mp4')
+export const FORENSIC_VIDEO = path.join(FIXTURES_DIR, 'media', 'forensic.mp4')
 export const SAMPLE_TRANSCRIPT = path.join(FIXTURES_DIR, 'transcript.json')
 
 export function requireFixtures(): void {
   const missing: string[] = []
   if (!fs.existsSync(SAMPLE_VIDEO)) missing.push('sample.mp4')
   if (!fs.existsSync(SILENCE_VIDEO)) missing.push('silence.mp4')
+  if (!fs.existsSync(FORENSIC_VIDEO)) missing.push('forensic.mp4')
   if (!fs.existsSync(SAMPLE_TRANSCRIPT)) missing.push('transcript.json')
   if (missing.length > 0) {
     throw new Error(

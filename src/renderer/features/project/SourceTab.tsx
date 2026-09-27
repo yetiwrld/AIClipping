@@ -1,11 +1,25 @@
-import React, { useRef, useState } from 'react'
-import { Film, Link2, HardDrive, FolderOpen, Trash2 } from 'lucide-react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { Film, Link2, HardDrive, FolderOpen, Trash2, AlertTriangle, Zap, Play, Pause, Volume2, VolumeX, RotateCcw, RotateCw, RefreshCw } from 'lucide-react'
 import { api, errMessage, isElectron, mediaUrl } from '../../api/client'
 import { pickUpload } from '../../api/upload'
 import { useAppStore } from '../../stores/app'
 import { useDataStore } from '../../stores/data'
-import { Field, formatBytes, Modal, ProgressBar } from '../../components/ui'
+import { Field, formatBytes, Modal, ProgressBar, Spinner } from '../../components/ui'
 import { DURATION_RANGES } from '@shared/constants'
+import { formatClock } from '@shared/utils/time'
+import { relinkProjectSource } from './relink'
+
+/**
+ * Source tab (§1-14): the project's media must PLAY here, not just in the
+ * editor. Aspect-correct player with real controls, playback-compatibility
+ * verdict, FFmpeg proxy workflow, missing-source relink, and honest
+ * error states — never a dead black box or an infinite spinner (§76).
+ */
+
+type PlaybackStatus = Awaited<ReturnType<typeof api['media.checkPlayback']>> | null
+
+/** Position/volume memory so returning to the tab resumes where you left (§5). */
+const playerMemory = new Map<string, { time: number; volume: number; muted: boolean }>()
 
 export function SourceTab() {
   const app = useAppStore()
@@ -13,9 +27,142 @@ export function SourceTab() {
   const project = data.activeProject!
   const [url, setUrl] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
+
+  // ---- player state ----
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const [playing, setPlaying] = useState(false)
+  const [current, setCurrent] = useState(0)
+  const [duration, setDuration] = useState(project.duration ?? 0)
+  const [volume, setVolume] = useState(1)
+  const [muted, setMuted] = useState(false)
+  const [rate, setRate] = useState(1)
+  const [videoError, setVideoError] = useState<string | null>(null)
+  const [playback, setPlayback] = useState<PlaybackStatus>(null)
+  const [proxyRunning, setProxyRunning] = useState(false)
+  const [relinking, setRelinking] = useState(false)
+  const [recheck, setRecheck] = useState(0)
+
   const importTask = data.tasks.find((t) => t.type === 'download' && t.projectId === project.id && (t.state === 'running' || t.state === 'queued'))
   const importing = project.status === 'importing' || Boolean(importTask)
+  const hasMedia = Boolean(project.sourcePath) && project.status !== 'importing' && project.status !== 'created'
 
+  // Playback compatibility + source existence (§4-7, §13-14).
+  useEffect(() => {
+    if (!hasMedia) return
+    void api['media.checkPlayback']({ projectId: project.id })
+      .then(setPlayback)
+      .catch(() => setPlayback(null))
+  }, [project.id, hasMedia, recheck, project.sourcePath, project.status])
+
+  const verdict = playback?.verdict ?? null
+  const useProxySrc = verdict === 'proxy' && Boolean(playback?.proxyExists)
+  const sourceMissing = verdict === 'missing'
+
+  // Restore remembered position when the media element mounts/changes.
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v) return
+    const mem = playerMemory.get(project.id)
+    if (mem) {
+      v.volume = mem.volume
+      v.muted = mem.muted
+      setVolume(mem.volume)
+      setMuted(mem.muted)
+      const apply = () => {
+        if (Number.isFinite(mem.time) && mem.time > 0.5 && mem.time < (v.duration || Infinity) - 0.5) {
+          v.currentTime = mem.time
+          setCurrent(mem.time)
+        }
+      }
+      if (v.readyState >= 1) apply()
+      else v.addEventListener('loadedmetadata', apply, { once: true })
+    }
+    const onTime = () => setCurrent(v.currentTime)
+    const onDur = () => setDuration(v.duration || project.duration || 0)
+    const onPlay = () => setPlaying(true)
+    const onPause = () => {
+      setPlaying(false)
+      playerMemory.set(project.id, { time: v.currentTime, volume: v.volume, muted: v.muted })
+    }
+    v.addEventListener('timeupdate', onTime)
+    v.addEventListener('durationchange', onDur)
+    v.addEventListener('play', onPlay)
+    v.addEventListener('pause', onPause)
+    return () => {
+      playerMemory.set(project.id, { time: v.currentTime, volume: v.volume, muted: v.muted })
+      v.removeEventListener('timeupdate', onTime)
+      v.removeEventListener('durationchange', onDur)
+      v.removeEventListener('play', onPlay)
+      v.removeEventListener('pause', onPause)
+    }
+  }, [project.id, project.duration, useProxySrc, hasMedia])
+
+  const togglePlay = useCallback(() => {
+    const v = videoRef.current
+    if (!v) return
+    if (v.paused) void v.play().catch(() => setVideoError('Playback was blocked. Press play again.'))
+    else v.pause()
+  }, [])
+
+  const seekBy = useCallback((delta: number) => {
+    const v = videoRef.current
+    if (!v) return
+    v.currentTime = Math.max(0, Math.min((v.duration || project.duration || 0) - 0.05, v.currentTime + delta))
+    setCurrent(v.currentTime)
+  }, [project.duration])
+
+  const onScrub = (t: number) => {
+    const v = videoRef.current
+    if (!v) return
+    v.currentTime = t
+    setCurrent(t)
+  }
+
+  // ---------------------------------------------------------- proxy/relink ---
+  async function createProxy() {
+    setProxyRunning(true)
+    try {
+      await api['media.renderProxy']({ projectId: project.id })
+      for (let i = 0; i < 100; i++) {
+        await new Promise((r) => setTimeout(r, 3000))
+        try {
+          const status = await api['media.checkPlayback']({ projectId: project.id })
+          setPlayback(status)
+          if (status.proxyExists) {
+            setVideoError(null)
+            app.toast({
+              level: 'success',
+              message: 'Preview proxy ready — playback switched to the proxy copy.',
+              hint: 'Renders still use the original file at full quality.'
+            })
+            return
+          }
+        } catch {
+          /* keep polling */
+        }
+      }
+      app.toast({ level: 'warn', message: 'The proxy is still transcoding. Playback will use it once finished.' })
+    } catch (err) {
+      app.toast({ level: 'error', ...errMessage(err) })
+    } finally {
+      setProxyRunning(false)
+    }
+  }
+
+  async function relink() {
+    setRelinking(true)
+    try {
+      const ok = await relinkProjectSource(app, project.id)
+      if (ok) {
+        setVideoError(null)
+        setRecheck((n) => n + 1)
+      }
+    } finally {
+      setRelinking(false)
+    }
+  }
+
+  // ------------------------------------------------------------- importing ---
   async function importFile() {
     try {
       if (isElectron) {
@@ -29,6 +176,7 @@ export function SourceTab() {
       }
       await data.loadProject(project.id)
       await data.refreshProjects()
+      setRecheck((n) => n + 1)
     } catch (err) {
       app.toast({ level: 'error', ...errMessage(err) })
       await data.loadProject(project.id)
@@ -57,20 +205,137 @@ export function SourceTab() {
     }
   }
 
+  // Aspect-correct player box: use the REAL source geometry, not a fixed 16:9.
+  const aspect = project.width && project.height ? `${project.width} / ${project.height}` : '16 / 9'
+
   return (
     <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 1.7fr) minmax(280px, 1fr)', alignItems: 'start' }}>
       <div className="stack">
-        <div className="panel flush">
-          {project.sourcePath && project.status !== 'importing' ? (
-            <video
-              key={project.sourcePath}
-              src={mediaUrl(project.sourcePath)}
-              controls
-              style={{ width: '100%', aspectRatio: '16/9', background: '#000', display: 'block' }}
-              preload="metadata"
-            />
+        <div className="panel flush source-player-panel">
+          {hasMedia && !sourceMissing ? (
+            <>
+              {verdict === 'audio-only' ? (
+                <div style={{ aspectRatio: aspect, maxHeight: 420, display: 'grid', placeItems: 'center', background: 'var(--bg-2)' }}>
+                  <div className="empty" style={{ padding: 30 }}>
+                    <Volume2 size={36} className="empty-icon" />
+                    <div style={{ fontWeight: 600 }}>Audio-only source</div>
+                    <div className="muted" style={{ fontSize: 13 }}>This file has no video track — it plays as audio.</div>
+                  </div>
+                </div>
+              ) : (
+                <video
+                  ref={videoRef}
+                  key={`${project.sourcePath}-${useProxySrc ? 'proxy' : 'source'}`}
+                  src={mediaUrl(project.sourcePath!, { proxy: useProxySrc })}
+                  muted={muted}
+                  onError={() => {
+                    setVideoError(
+                      verdict === 'proxy'
+                        ? playback?.reason ?? 'This file needs a preview proxy before it can play.'
+                        : 'The video could not be loaded. The file may be missing, or its format is not supported for direct playback.'
+                    )
+                  }}
+                  onLoadedData={() => setVideoError(null)}
+                  style={{ width: '100%', aspectRatio: aspect, maxHeight: 480, background: '#000', display: 'block', objectFit: 'contain' }}
+                  preload="metadata"
+                  playsInline
+                />
+              )}
+              {/* playback problem overlay — actionable, never a dead box */}
+              {videoError && (
+                <div className="playback-error" style={{ aspectRatio: aspect, maxHeight: 480 }}>
+                  <div>
+                    <AlertTriangle size={26} className="icon-big" />
+                    <h4>Playback problem</h4>
+                    <p>{videoError}</p>
+                    {verdict === 'proxy' && !playback?.proxyExists && (
+                      <button className="btn primary sm" onClick={() => void createProxy()} disabled={proxyRunning}>
+                        {proxyRunning ? <Spinner size={11} /> : <Zap size={12} />}
+                        {proxyRunning ? 'Building proxy…' : 'Create preview proxy'}
+                      </button>
+                    )}
+                    {verdict === 'native' && (
+                      <p style={{ marginTop: 8, color: 'var(--text-3)' }}>
+                        Transcription, analysis and rendering still work — only in-app preview playback is affected.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+              {verdict === 'proxy' && !videoError && !useProxySrc && (
+                <div className="source-note warn">
+                  <Zap size={13} />
+                  <span>{playback?.reason} Preview needs a transcoded proxy — rendering always uses the original.</span>
+                  <button className="btn sm" onClick={() => void createProxy()} disabled={proxyRunning}>
+                    {proxyRunning ? <Spinner size={11} /> : <Zap size={12} />}
+                    {proxyRunning ? 'Building…' : 'Build proxy'}
+                  </button>
+                </div>
+              )}
+              {useProxySrc && (
+                <div className="source-note">
+                  <Zap size={13} />
+                  <span>Playing the 720p preview proxy. Renders use the original file at full quality.</span>
+                </div>
+              )}
+              {/* real controls (§76: no dead controls) */}
+              <div className="source-controls">
+                <button className="ctl" onClick={togglePlay} title={playing ? 'Pause (space)' : 'Play (space)'}>
+                  {playing ? <Pause size={15} /> : <Play size={15} />}
+                </button>
+                <button className="ctl" onClick={() => seekBy(-10)} title="Back 10s"><RotateCcw size={14} /></button>
+                <button className="ctl" onClick={() => seekBy(10)} title="Forward 10s"><RotateCw size={14} /></button>
+                <span className="mono tiny" style={{ minWidth: 86, textAlign: 'center' }}>
+                  {formatClock(current, true)} <span className="muted">/ {formatClock(duration || project.duration || 0, true)}</span>
+                </span>
+                <input
+                  className="scrub"
+                  type="range"
+                  min={0}
+                  max={Math.max(0.1, duration || project.duration || 0)}
+                  step={0.05}
+                  value={Math.min(current, duration || project.duration || 0)}
+                  onChange={(e) => onScrub(parseFloat(e.target.value))}
+                  style={{ flex: 1 }}
+                />
+                <button className="ctl" onClick={() => { const v = videoRef.current; if (v) { v.muted = !v.muted; setMuted(v.muted) } }} title={muted ? 'Unmute' : 'Mute'}>
+                  {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+                </button>
+                <select
+                  className="select tiny"
+                  value={String(rate)}
+                  onChange={(e) => { const r = parseFloat(e.target.value); setRate(r); if (videoRef.current) videoRef.current.playbackRate = r }}
+                  title="Playback speed"
+                  style={{ width: 62 }}
+                >
+                  {[0.5, 1, 1.5, 2].map((r) => <option key={r} value={r}>{r}×</option>)}
+                </select>
+              </div>
+            </>
+          ) : sourceMissing ? (
+            <div style={{ aspectRatio: aspect, maxHeight: 480, display: 'grid', placeItems: 'center', background: 'var(--bg-2)' }}>
+              <div className="empty" style={{ padding: 34, maxWidth: 420 }}>
+                <AlertTriangle size={36} className="empty-icon" style={{ color: 'var(--warn)' }} />
+                <div style={{ fontWeight: 600 }}>Source file missing</div>
+                <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>
+                  {playback?.reason}
+                </div>
+                <div className="row" style={{ marginTop: 12, gap: 8 }}>
+                  <button className="btn primary sm" onClick={() => void relink()} disabled={relinking}>
+                    {relinking ? <Spinner size={11} /> : <Link2 size={12} />}
+                    {relinking ? 'Relinking…' : 'Relink source file…'}
+                  </button>
+                  <button className="btn sm" onClick={() => setRecheck((n) => n + 1)} title="Check again">
+                    <RefreshCw size={12} />
+                  </button>
+                </div>
+                <div className="field-hint" style={{ marginTop: 10 }}>
+                  Relinking accepts only the same media file at a new location. Everything else in the project is kept.
+                </div>
+              </div>
+            </div>
           ) : (
-            <div style={{ aspectRatio: '16/9', display: 'grid', placeItems: 'center', background: 'var(--bg-2)' }}>
+            <div style={{ aspectRatio: aspect, maxHeight: 420, display: 'grid', placeItems: 'center', background: 'var(--bg-2)' }}>
               {importing ? (
                 <div style={{ width: '70%' }}>
                   <div className="muted" style={{ textAlign: 'center', marginBottom: 10, fontSize: 13 }}>
@@ -128,10 +393,28 @@ export function SourceTab() {
                 <MetaRow k="Frame rate" v={project.fps != null ? `${project.fps} fps` : '—'} />
                 <MetaRow k="Video codec" v={project.videoCodec ?? '—'} />
                 <MetaRow k="Audio" v={project.hasAudio ? `${project.audioCodec ?? 'yes'}` : 'No audio track'} warn={!project.hasAudio} />
+                <MetaRow
+                  k="Content area"
+                  v={
+                    project.contentRect
+                      ? `${project.contentRect.width} × ${project.contentRect.height} at ${project.contentRect.left},${project.contentRect.top}`
+                      : 'Full frame (no bars detected)'
+                  }
+                  warn={Boolean(
+                    project.contentRect &&
+                    project.width && project.height &&
+                    (project.contentRect.width < project.width - 2 || project.contentRect.height < project.height - 2)
+                  )}
+                />
                 <MetaRow k="Size" v={project.sizeBytes ? formatBytes(project.sizeBytes) : '—'} />
                 <MetaRow k="Imported via" v={project.sourceType === 'url' ? 'URL download' : 'Local file'} />
               </tbody>
             </table>
+          )}
+          {project.contentRect && project.width && project.height && (project.contentRect.width < project.width - 2 || project.contentRect.height < project.height - 2) && (
+            <div className="field-hint" style={{ marginTop: 8 }}>
+              Baked-in letterbox/pillarbox bars were detected — crops and smart-crop analyze inside the real content area, so exports fill the frame without bars.
+            </div>
           )}
         </div>
 
@@ -254,4 +537,3 @@ function formatDuration(seconds: number): string {
   }
   return `${m}m ${s}s`
 }
-

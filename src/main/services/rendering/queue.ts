@@ -74,7 +74,9 @@ export class RenderQueue {
       startTime: clip.startTime,
       endTime: clip.endTime,
       silenceCuts: clip.silenceCuts?.length ?? 0,
-      hardwareEncoding: encoderMode(settings)
+      smartCropKeyframes: clip.smartCropKeyframes?.length ?? 0,
+      hardwareEncoding: encoderMode(settings),
+      codec: settings.video.codec
     }, preview)
     tasksRepo.create(this.ctx.db, { id: renderId, type: 'render', projectId: clip.projectId, payload: { clipId, preview } })
 
@@ -387,6 +389,7 @@ export function freeDiskBytes(dirPath: string): number | null {
 
 interface ProbeStream {
   codec_type?: string
+  codec_name?: string
   width?: number
   height?: number
   avg_frame_rate?: string
@@ -400,7 +403,7 @@ interface ProbeStream {
 async function validateRenderOutput(ffprobePath: string, plan: RenderPlan): Promise<void> {
   const res = await runProcess(
     ffprobePath,
-    ['-v', 'error', '-show_entries', 'stream=codec_type,width,height,avg_frame_rate', '-show_entries', 'format=duration', '-of', 'json', plan.finalPath],
+    ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,width,height,avg_frame_rate', '-show_entries', 'format=duration', '-of', 'json', plan.finalPath],
     { timeoutMs: 30_000 }
   )
   if (res.code !== 0) {
@@ -423,6 +426,9 @@ async function validateRenderOutput(ffprobePath: string, plan: RenderPlan): Prom
   const problems: string[] = []
   if (!video) problems.push('no video stream found')
   else {
+    if (video.codec_name && video.codec_name !== plan.codec) {
+      problems.push(`video codec ${video.codec_name} but expected ${plan.codec}`)
+    }
     if (video.width == null || video.height == null) problems.push('missing dimensions')
     else if (Math.abs(video.width - plan.target.w) > 2 || Math.abs(video.height - plan.target.h) > 2) {
       problems.push(`dimensions ${video.width}x${video.height} but expected ${plan.target.w}x${plan.target.h}`)

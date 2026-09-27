@@ -59,6 +59,7 @@ export const appSettingsSchema = z.object({
     crf: z.number().int().min(0).max(51),
     useHardwareEncoder: z.boolean(),
     audioNormalize: z.boolean(),
+    codec: z.enum(['h264', 'hevc']),
     /** Default resolution/quality tiers for new clips. */
     defaultResolution: z.enum(['720p', '1080p', '1440p', '2160p']),
     defaultQuality: z.enum(['draft', 'standard', 'high', 'maximum']),
@@ -194,7 +195,7 @@ export const clipPatchSchema = z.object({
   startTime: z.number().min(0).optional(),
   endTime: z.number().min(0).optional(),
   aspectRatio: z.enum(['9:16', '1:1', '4:5', '16:9']).optional(),
-  cropMode: z.enum(['center', 'top', 'bottom', 'manual']).optional(),
+  cropMode: z.enum(['fit', 'center', 'top', 'bottom', 'smart', 'manual']).optional(),
   cropX: z.number().min(0).max(1).optional(),
   zoom: z.number().min(1).max(3).optional(),
   captionStyleId: z.string().max(40).optional(),
@@ -204,6 +205,19 @@ export const clipPatchSchema = z.object({
   captionCueMerges: z.record(z.string(), z.boolean()).optional(),
   captionTimingOffsets: z.record(z.string(), z.number().min(-5).max(5)).optional(),
   silenceCuts: z.array(silenceRangeSchema).max(400).optional(),
+  smartCropKeyframes: z
+    .array(
+      z.object({
+        start: z.number().min(0),
+        end: z.number().min(0),
+        x: z.number().min(0),
+        y: z.number().min(0),
+        w: z.number().int().min(2),
+        h: z.number().int().min(2)
+      })
+    )
+    .max(64)
+    .optional(),
   outputResolution: z.enum(['720p', '1080p', '1440p', '2160p']).optional(),
   outputQuality: z.enum(['draft', 'standard', 'high', 'maximum']).optional(),
   outputFps: z.enum(['source', '24', '25', '30', '50', '60']).optional(),
@@ -288,6 +302,9 @@ export const ipcPayloads = {
     .strict(),
 
   'clips.optimizeBoundaries': z.object({ clipId: uuidSchema }).strict(),
+  'clips.analyzeSmartCrop': z.object({ clipId: uuidSchema }).strict(),
+
+  'projects.relinkSource': z.object({ id: uuidSchema, filePath: z.string().min(1).max(1000) }).strict(),
   'analysis.updateCandidate': z
     .object({ id: uuidSchema, patch: candidatePatchSchema })
     .strict(),

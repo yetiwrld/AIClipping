@@ -5,7 +5,8 @@ import { AppError } from '@shared/errors'
 import { ASPECT_RATIOS, getCaptionStyle, getQualityPreset, resolutionFor, type QualityPreset } from '@shared/constants'
 import { buildCues, type CaptionCue } from '@shared/captions/segmentation'
 import { computeCrop } from '@shared/video/crop'
-import { keptSegments, keptDuration, remapCuesToKept } from '@shared/video/segments'
+import { keptSegments, keptDuration, remapCuesToKept, type TimeSegment } from '@shared/video/segments'
+import { smartWindowAt } from '@shared/video/crop'
 import { buildAssDocument } from '@shared/captions/ass'
 import { escapeFilterPath } from '../media/ffmpeg'
 import type { AppContext } from '../app-context'
@@ -39,6 +40,8 @@ export interface RenderPlan {
   quality: QualityPreset
   fps: number
   segments: number
+  /** Video codec actually used (for validation). */
+  codec: string
 }
 
 export const HW_ENCODER_PREFERENCE = ['h264_nvenc', 'h264_qsv', 'h264_amf', 'h264_videotoolbox']
@@ -128,8 +131,12 @@ export function buildRenderPlan(
 
   // ---- kept segments (silence removal) ----
   const kept = keptSegments(clip.startTime, clip.endTime, clip.silenceCuts ?? [])
-  const multiSegment = kept.length > 1
-  const outputDuration = Math.max(0.2, multiSegment ? keptDuration(kept) : clip.endTime - clip.startTime)
+  const multiSegment =
+    kept.length > 1 ||
+    kept[0].start > clip.startTime + 0.001 ||
+    kept[kept.length - 1].end < clip.endTime - 0.001 ||
+    (clip.cropMode === 'smart' && (clip.smartCropKeyframes?.length ?? 0) > 1)
+  const outputDuration = Math.max(0.2, kept.length > 1 ? keptDuration(kept) : clip.endTime - clip.startTime)
 
   // ---- captions (shared cue construction; remapped for multi-segment) ----
   const cues = buildClipCues(ctx, clip)
@@ -164,26 +171,73 @@ export function buildRenderPlan(
   }
 
   // ---- reframe ----
+  // Content-rect aware: baked-in bars are cropped off first, so a portrait
+  // export of a bar-filled source FILLS the frame instead of shipping bars.
   const crop = computeCrop(
     project.width ?? 1920,
     project.height ?? 1080,
     target.w,
     target.h,
-    clip.cropMode,
+    clip.cropMode === 'smart' ? 'center' : clip.cropMode,
     clip.cropX,
-    clip.zoom
+    clip.zoom,
+    project.contentRect
   )
-  const perSegmentVf = `fps=${fps},crop=${crop.w}:${crop.h}:${crop.x}:${crop.y},scale=${target.w}:${target.h}:flags=lanczos`
+  const frameW = project.width ?? 1920
+  const frameH = project.height ?? 1080
+  const contentIsFullFrame =
+    !project.contentRect ||
+    (project.contentRect.left === 0 && project.contentRect.top === 0 &&
+      project.contentRect.width >= frameW - 2 && project.contentRect.height >= frameH - 2)
+
+  const fitVf = contentIsFullFrame
+    ? `fps=${fps},scale=${target.w}:${target.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${target.w}:${target.h}:(ow-iw)/2:(oh-ih)/2`
+    : `fps=${fps},crop=${crop.w}:${crop.h}:${crop.x}:${crop.y},scale=${target.w}:${target.h}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${target.w}:${target.h}:(ow-iw)/2:(oh-ih)/2`
+  const fillVfFor = (c: { w: number; h: number; x: number; y: number }) =>
+    `fps=${fps},crop=${c.w}:${c.h}:${c.x}:${c.y},scale=${target.w}:${target.h}:flags=lanczos`
+  const isFit = clip.cropMode === 'fit'
+  // Render segments: silence-kept ranges, further split at smart-crop shot
+  // boundaries so each segment carries its own crop window (§25, §28).
+  interface RenderSegment extends TimeSegment {
+    crop: { w: number; h: number; x: number; y: number }
+  }
+  const renderSegments: RenderSegment[] = []
+  const keyframes = clip.cropMode === 'smart' ? clip.smartCropKeyframes ?? [] : []
+  for (const k of kept) {
+    if (keyframes.length === 0) {
+      renderSegments.push({ ...k, crop })
+      continue
+    }
+    // split the kept range at every keyframe boundary inside it
+    const cuts: number[] = []
+    for (const kf of keyframes) {
+      if (kf.start > k.start + 0.05 && kf.start < k.end - 0.05) cuts.push(kf.start)
+      if (kf.end > k.start + 0.05 && kf.end < k.end - 0.05) cuts.push(kf.end)
+    }
+    const points = [k.start, ...cuts.sort((a, b) => a - b), k.end]
+    for (let i = 0; i < points.length - 1; i++) {
+      const s = points[i]
+      const e = points[i + 1]
+      if (e - s < 0.04) continue
+      const win = smartWindowAt(s + (e - s) / 2, keyframes, crop)
+      renderSegments.push({ start: s, end: e, crop: win })
+    }
+  }
 
   // ---- audio ----
   const hasAudio = project.hasAudio
   const audioNormalize = opts.settings.video.audioNormalize
 
   // ---- encoder ----
-  const isHw = encoder !== 'libx264'
+  // H.264 is the everywhere-safe default; HEVC (libx265) is opt-in (§60).
+  // Hardware encoders are h264-only — HEVC renders always use software.
+  const wantsHevc = opts.settings.video.codec === 'hevc' && !opts.preview
+  const isHw = encoder !== 'libx264' && !wantsHevc
   const encoderArgs = isHw
     ? ['-c:v', encoder, '-b:v', hwBitrate(target.w, target.h, quality)]
-    : ['-c:v', 'libx264', '-crf', String(quality.crf), '-preset', quality.x264Preset]
+    : wantsHevc
+      ? ['-c:v', 'libx265', '-crf', String(Math.min(40, quality.crf + 4)), '-preset', quality.x264Preset, '-tag:v', 'hvc1']
+      : ['-c:v', 'libx264', '-crf', String(quality.crf), '-preset', quality.x264Preset]
 
   const commonTail = [
     ...encoderArgs,
@@ -194,39 +248,45 @@ export function buildRenderPlan(
     tmpPath
   ]
 
+  const useMultiPath = renderSegments.length > 1
+  // Single-segment renders (incl. smart with one keyframe) use that segment's crop.
+  const simpleVf = isFit ? fitVf : fillVfFor(renderSegments[0]?.crop ?? crop)
   let args: string[]
-  if (!multiSegment) {
+  if (!useMultiPath) {
     // Simple path: single -ss/-t with a -vf chain.
-    const vf = assArg ? `${perSegmentVf},${assArg}` : perSegmentVf
+    const vf = assArg ? `${simpleVf},${assArg}` : simpleVf
     const audioArgs = hasAudio
       ? audioNormalize
         ? ['-af', 'loudnorm=I=-16:TP=-1.5:LRA=11', '-c:a', 'aac', '-b:a', '192k', '-ar', '48000']
         : ['-c:a', 'aac', '-b:a', '192k', '-ar', '48000']
       : ['-an']
+    const only = renderSegments[0] ?? { start: clip.startTime, end: clip.endTime }
     args = [
       '-y',
-      '-ss', clip.startTime.toFixed(3),
+      '-ss', only.start.toFixed(3),
       '-i', project.sourcePath,
-      '-t', outputDuration.toFixed(3),
+      '-t', (only.end - only.start).toFixed(3),
       '-vf', vf,
       ...audioArgs,
       ...commonTail
     ]
   } else {
-    // Multi-segment: one input per kept range, filter_complex concat.
-    // Each input gets its own seek; all segments share the reframe chain.
+    // Multi-segment: one input per render segment, filter_complex concat.
+    // Segments carry their own crop (smart-crop shot windows) and/or their
+    // own time range (silence removal).
     const inputs: string[] = []
-    for (const k of kept) {
+    for (const seg of renderSegments) {
       inputs.push(
-        '-ss', k.start.toFixed(3),
-        '-t', (k.end - k.start).toFixed(3),
+        '-ss', seg.start.toFixed(3),
+        '-t', (seg.end - seg.start).toFixed(3),
         '-i', project.sourcePath
       )
     }
-    const n = kept.length
+    const n = renderSegments.length
     const chains: string[] = []
     for (let i = 0; i < n; i++) {
-      chains.push(`[${i}:v]${perSegmentVf}[v${i}]`)
+      const vf = isFit ? fitVf : fillVfFor(renderSegments[i].crop)
+      chains.push(`[${i}:v]${vf}[v${i}]`)
     }
     chains.push(`${Array.from({ length: n }, (_, i) => `[v${i}]`).join('')}concat=n=${n}:v=1:a=0[vc]`)
     if (assArg) chains.push(`[vc]${assArg}[vout]`)
@@ -268,7 +328,8 @@ export function buildRenderPlan(
     target,
     quality,
     fps,
-    segments: kept.length
+    segments: renderSegments.length,
+    codec: wantsHevc ? 'hevc' : 'h264'
   }
 }
 

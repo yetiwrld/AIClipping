@@ -9,8 +9,9 @@ import { TaskManager } from '../services/tasks'
 import { RenderQueue } from '../services/rendering/queue'
 import {
   createProject, deleteProject, getProject, importMediaFile, importMediaUrl,
-  listProjects, projectStorage, renameProject, updateProjectSettings
+  listProjects, projectStorage, relinkSource, renameProject, updateProjectSettings
 } from '../services/projects'
+import { analyzeSmartCrop } from '../services/media/smartcrop'
 import { getTranscript, importTranscript, runTranscription } from '../services/transcription'
 import { checkUrlProviders } from '../services/media/url-providers'
 import { detectSilence, optionsForMode, projectWithMedia, proxyStatus, renderProxy } from '../services/media/analysis'
@@ -80,6 +81,18 @@ function runTask(taskId: string, fn: (report: import('../services/tasks/index').
     const result = await renderProxy(ctx, project, (pct) => report('transcoding', pct, 'Building preview proxy'), signal)
     return { proxyPath: result.proxyPath }
   })
+  tasks.registerRunner('smartcrop', async (payload, report) => {
+    const clip = clipsRepo.get(ctx.db, String(payload.clipId))
+    if (!clip) throw new AppError('CLIP_NOT_FOUND', 'That clip no longer exists.')
+    const project = getProject(ctx, clip.projectId)
+    if (!project) throw new AppError('PROJECT_NOT_FOUND', 'That project no longer exists.')
+    report('detecting-shots', 0.05, 'Detecting shots and content area')
+    const result = await analyzeSmartCrop(ctx, project, clip)
+    report('analyzing', 0.9, `Found ${result.shotCount} shot${result.shotCount === 1 ? '' : 's'}`)
+    const { updateClip } = await import('../services/clips')
+    const updated = updateClip(ctx, clip.id, { smartCropKeyframes: result.keyframes })
+    return { keyframes: result.keyframes, shotCount: result.shotCount, barsRemoved: result.barsRemoved, clip: updated }
+  })
   tasks.registerRunner('download', async (payload, report) => {
     const projectId = String(payload.projectId)
     if (payload.kind === 'url') {
@@ -109,6 +122,7 @@ function runTask(taskId: string, fn: (report: import('../services/tasks/index').
     'projects.storage': (p: { id: string }) => projectStorage(ctx, p.id),
     'projects.updateSettings': (p: { id: string; settings: { durationPreset?: 'short' | 'medium' | 'long' | 'mixed'; maxCandidates?: number } }) =>
       updateProjectSettings(ctx, p.id, p.settings),
+    'projects.relinkSource': (p: { id: string; filePath: string }) => relinkSource(ctx, p.id, p.filePath),
 
     'media.importFile': async (p: { projectId: string; filePath?: string }): Promise<{ taskId: string }> => {
       let filePath: string | null | undefined = p.filePath
@@ -228,6 +242,21 @@ function runTask(taskId: string, fn: (report: import('../services/tasks/index').
     'clips.update': (p: { id: string; patch: Record<string, unknown> }) => updateClip(ctx, p.id, p.patch),
     'clips.delete': (p: { id: string }) => deleteClip(ctx, p.id),
     'clips.generateMetadata': (p: { id: string }) => generateClipMetadata(ctx, p.id),
+    'clips.analyzeSmartCrop': (p: { clipId: string }): { taskId: string } => {
+      const clip = clipsRepo.get(ctx.db, p.clipId)
+      if (!clip) throw new AppError('CLIP_NOT_FOUND', 'That clip no longer exists.')
+      const task = tasks.create('smartcrop', clip.projectId, { clipId: p.clipId, projectId: clip.projectId })
+      runTask(task.id, async (report, signal) => {
+        report('detecting-shots', 0.02, 'Detecting shots and content area')
+        const project = projectWithMedia(ctx, clip.projectId)
+        const result = await analyzeSmartCrop(ctx, project, clip)
+        report('analyzing', 0.92, `Found ${result.shotCount} shot${result.shotCount === 1 ? '' : 's'}`)
+        if (signal.aborted) throw new AppError('TASK_CANCELLED', 'Smart crop analysis was cancelled.')
+        const updated = updateClip(ctx, p.clipId, { smartCropKeyframes: result.keyframes })
+        return { keyframes: result.keyframes, shotCount: result.shotCount, barsRemoved: result.barsRemoved, clip: updated }
+      })
+      return { taskId: task.id }
+    },
 
     'renders.queue': async (p: { clipId: string; preview?: boolean }): Promise<{ renderId: string }> =>
       ({ renderId: await renders.queueRender(p.clipId, p.preview ?? false) }),

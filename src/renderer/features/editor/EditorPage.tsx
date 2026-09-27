@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ScanEye,
+  Link,
   ArrowLeft, Play, Pause, Volume2, VolumeX, SkipBack, Type, Crop, Tags, Copy,
   ChevronRight, Scissors, Wand2, Save, Undo2, Redo2, AlertTriangle, ShieldCheck,
   Gauge, Film, AudioLines, Eraser, RotateCcw, Zap
@@ -9,14 +11,15 @@ import { useAppStore } from '../../stores/app'
 import { useDataStore } from '../../stores/data'
 import { ErrorBox, Field, Spinner, Switch } from '../../components/ui'
 import { buildCues, cueAt } from '@shared/captions/segmentation'
-import { computeCrop } from '@shared/video/crop'
+import { computeCrop, contentRectOf, smartWindowAt } from '@shared/video/crop'
 import { keptSegments, keptDuration } from '@shared/video/segments'
 import {
   ASPECT_RATIOS, CAPTION_STYLES, RESOLUTION_PRESETS, QUALITY_PRESETS, estimateRenderSizeMb,
   getCaptionStyle, getDurationRange, getPlatformPreset, PLATFORM_PRESETS, resolutionFor
 } from '@shared/constants'
-import type { CaptionOverrides, Clip, TranscriptSegment } from '@shared/types'
+import type { CaptionOverrides, Clip, Project, TranscriptSegment } from '@shared/types'
 import { formatClock } from '@shared/utils/time'
+import { relinkProjectSource } from '../project/relink'
 import { Timeline } from './Timeline'
 import { CaptionPreview } from './CaptionPreview'
 
@@ -29,10 +32,12 @@ import { CaptionPreview } from './CaptionPreview'
  */
 
 type PlaybackStatus = {
-  verdict: 'native' | 'proxy' | 'audio-only'
+  verdict: 'native' | 'proxy' | 'audio-only' | 'missing'
   reason: string
   proxyExists: boolean
   proxyPath: string | null
+  sourceExists: boolean
+  sourcePath: string | null
 } | null
 
 const SNAPSHOT_EXCLUDE = new Set(['id', 'projectId', 'candidateId', 'status', 'createdAt', 'updatedAt'])
@@ -58,6 +63,7 @@ export function EditorPage() {
   const [playback, setPlayback] = useState<PlaybackStatus>(null)
   const [videoError, setVideoError] = useState<string | null>(null)
   const [proxyRunning, setProxyRunning] = useState(false)
+  const [relinking, setRelinking] = useState(false)
 
   // timeline visuals (real, FFmpeg-generated)
   const [filmstrip, setFilmstrip] = useState<Array<{ t: number; path: string }> | null>(null)
@@ -377,11 +383,59 @@ export function EditorPage() {
 
   // Mirror of the render plan: crop toward the selected output target so the
   // preview shows exactly what FFmpeg produces (plan.ts buildRenderPlan).
+  // Content-rect aware: baked-in source bars are excluded from every fill /
+  // smart crop; `fit` shows the whole content letterboxed (§29).
   const target = clip ? resolutionFor(clip.aspectRatio, clip.outputResolution) : { w: 1080, h: 1920 }
-  const crop = useMemo(() => {
+  const baseCrop = useMemo(() => {
     if (!clip || !project?.width || !project?.height) return null
-    return computeCrop(project.width, project.height, target.w, target.h, clip.cropMode, clip.cropX, clip.zoom)
+    return computeCrop(
+      project.width, project.height, target.w, target.h,
+      clip.cropMode === 'smart' ? 'center' : clip.cropMode,
+      clip.cropX, clip.zoom, project.contentRect
+    )
   }, [clip, project, target])
+  const smartKeyframes = clip?.cropMode === 'smart' ? clip.smartCropKeyframes ?? [] : []
+  const crop =
+    baseCrop && clip && smartKeyframes.length > 0
+      ? smartWindowAt(Math.min(Math.max(currentTime, clip.startTime), clip.endTime), smartKeyframes, baseCrop)
+      : baseCrop
+  const isFitCrop = clip?.cropMode === 'fit'
+
+  /**
+   * Video element geometry inside the output frame.
+   * fill/smart: scale the frame so the crop window fills the frame (exact
+   * FFmpeg crop+scale). fit: scale so the CONTENT area fits inside with
+   * letterboxing — exactly the render plan's pad chain (§68 parity).
+   */
+  const videoStyle = useMemo(() => {
+    if (!project?.width || !project.height || !crop) {
+      return { width: '100%', height: '100%', objectFit: 'contain' as const }
+    }
+    if (isFitCrop) {
+      const content = contentRectOf(project, project.width, project.height)
+      const s = Math.min(target.w / content.width, target.h / content.height)
+      const dispW = content.width * s
+      const dispH = content.height * s
+      const leftPx = (target.w - dispW) / 2 - content.left * s
+      const topPx = (target.h - dispH) / 2 - content.top * s
+      return {
+        position: 'absolute' as const,
+        width: `${(project.width * s * 100) / target.w}%`,
+        height: `${(project.height * s * 100) / target.h}%`,
+        left: `${(leftPx * 100) / target.w}%`,
+        top: `${(topPx * 100) / target.h}%`,
+        objectFit: 'fill' as const
+      }
+    }
+    return {
+      position: 'absolute' as const,
+      width: `${(project.width / crop.w) * 100}%`,
+      height: `${(project.height / crop.h) * 100}%`,
+      left: `${-(crop.x / crop.w) * 100}%`,
+      top: `${-(crop.y / crop.h) * 100}%`,
+      objectFit: 'fill' as const
+    }
+  }, [project, crop, isFitCrop, target])
 
   // Measure the stage; the preview frame is sized from it so it always fits
   // and always honors the output aspect ratio exactly.
@@ -551,22 +605,13 @@ export function EditorPage() {
                 setVideoError(
                   playback?.verdict === 'proxy'
                     ? playback.reason
-                    : 'The video could not be loaded. The file may be missing, or its format is not supported for direct playback.'
+                    : playback?.verdict === 'missing'
+                      ? playback.reason
+                      : 'The video could not be loaded. The file may be missing, or its format is not supported for direct playback.'
                 )
               }}
               onLoadedData={() => setVideoError(null)}
-              style={
-                crop
-                  ? {
-                      position: 'absolute',
-                      width: `${(project.width! / crop.w) * 100}%`,
-                      height: `${(project.height! / crop.h) * 100}%`,
-                      left: `${-(crop.x / crop.w) * 100}%`,
-                      top: `${-(crop.y / crop.h) * 100}%`,
-                      objectFit: 'fill'
-                    }
-                  : { width: '100%', height: '100%', objectFit: 'contain' }
-              }
+              style={videoStyle}
               preload="metadata"
               playsInline
             />
@@ -590,6 +635,31 @@ export function EditorPage() {
                         Retry playback
                       </button>
                     </p>
+                  )}
+                  {playback?.verdict === 'missing' && (
+                    <div style={{ marginTop: 4 }}>
+                      <button
+                        className="btn primary sm"
+                        onClick={() => {
+                          setRelinking(true)
+                          void relinkProjectSource(app, clip.projectId)
+                            .then((ok) => {
+                              if (ok) {
+                                setVideoError(null)
+                                void api['media.checkPlayback']({ projectId: clip.projectId }).then(setPlayback).catch(() => undefined)
+                              }
+                            })
+                            .finally(() => setRelinking(false))
+                        }}
+                        disabled={relinking}
+                      >
+                        {relinking ? <Spinner size={11} /> : <Link size={12} />}
+                        {relinking ? 'Relinking…' : 'Relink source file…'}
+                      </button>
+                      <p style={{ marginTop: 8, color: 'var(--text-3)' }}>
+                        Relinking accepts only the same media file at a new location.
+                      </p>
+                    </div>
                   )}
                   {playback?.verdict === 'native' && (
                     <p style={{ marginTop: 8, color: 'var(--text-3)' }}>
@@ -682,7 +752,7 @@ export function EditorPage() {
               <Crop size={12} /> Crop &amp; framing <ChevronRight size={13} className="chev" />
             </summary>
             <div className="inspector-body">
-              <CropPanel clip={clip} updateClip={updateClip} />
+              <CropPanel clip={clip} project={project} updateClip={updateClip} />
             </div>
           </details>
 
@@ -1440,8 +1510,57 @@ function OutputPanel(props: {
 
 // ============================================================ crop panel ===
 
-function CropPanel(props: { clip: Clip; updateClip: (patch: Partial<Clip>, immediate?: boolean) => void }) {
-  const { clip } = props
+function CropPanel(props: {
+  clip: Clip
+  project: Project
+  updateClip: (patch: Partial<Clip>, immediate?: boolean) => void
+}) {
+  const { clip, project } = props
+  const app = useAppStore()
+  const [analyzing, setAnalyzing] = useState(false)
+  const [shotInfo, setShotInfo] = useState<string | null>(null)
+  const hasBars =
+    project.contentRect != null &&
+    project.width != null && project.height != null &&
+    (project.contentRect.width < project.width - 2 || project.contentRect.height < project.height - 2)
+
+  async function analyzeSmartCrop() {
+    setAnalyzing(true)
+    setShotInfo(null)
+    try {
+      await api['clips.analyzeSmartCrop']({ clipId: clip.id })
+      // The analysis runs as a task: poll until the keyframes land on the clip.
+      for (let i = 0; i < 120; i++) {
+        await new Promise((r) => setTimeout(r, 1500))
+        try {
+          const clips = await api['clips.list']({ projectId: clip.projectId })
+          const fresh = clips.find((c) => c.id === clip.id)
+          if (fresh && (fresh.smartCropKeyframes?.length ?? 0) > 0) {
+            setShotInfo(`${fresh.smartCropKeyframes!.length} crop window${fresh.smartCropKeyframes!.length === 1 ? '' : 's'} — preview follows the subject per shot.`)
+            app.toast({
+              level: 'success',
+              message: `Smart crop ready: ${fresh.smartCropKeyframes!.length} window${fresh.smartCropKeyframes!.length === 1 ? '' : 's'} across the clip.`
+            })
+            return
+          }
+          const tasks = await api['tasks.list']({ projectId: clip.projectId })
+          const t = tasks.find((x) => x.type === 'smartcrop' && x.state === 'failed')
+          if (t) {
+            app.toast({ level: 'error', message: 'Smart crop analysis failed.', hint: typeof t.error === 'string' ? t.error : t.error?.message })
+            return
+          }
+        } catch {
+          /* keep polling */
+        }
+      }
+      app.toast({ level: 'warn', message: 'Smart crop analysis is still running. The preview updates when it finishes.' })
+    } catch (err) {
+      app.toast({ level: 'error', ...errMessage(err) })
+    } finally {
+      setAnalyzing(false)
+    }
+  }
+
   return (
     <>
       <Field label="Crop mode">
@@ -1450,12 +1569,51 @@ function CropPanel(props: { clip: Clip; updateClip: (patch: Partial<Clip>, immed
           <option value="top">Top-biased crop (taller sources)</option>
           <option value="bottom">Bottom-biased crop (taller sources)</option>
           <option value="manual">Manual — drag the focus point</option>
+          <option value="smart">Smart — subject-aware per shot</option>
+          <option value="fit">Fit — whole content, letterboxed</option>
         </select>
         <div className="field-hint">
-          Face-aware and speaker-tracking crops are planned but not yet available — the preview shows exactly what the renderer
-          produces, so you can frame the subject manually.
+          {clip.cropMode === 'fit'
+            ? 'Shows the entire content area with letterbox padding — nothing is cropped off.'
+            : clip.cropMode === 'smart'
+              ? 'FFmpeg shot detection + per-shot saliency pick the highest-energy window. Analyze first; without keyframes smart falls back to a content-aware center crop.'
+              : 'The preview shows exactly what the renderer produces.'}
         </div>
       </Field>
+
+      {clip.cropMode === 'smart' && (
+        <div className="stack" style={{ gap: 8, marginBottom: 4 }}>
+          <button className="btn sm" onClick={() => void analyzeSmartCrop()} disabled={analyzing}>
+            {analyzing ? <Spinner size={11} /> : <ScanEye size={12} />}
+            {analyzing
+              ? 'Analyzing shots…'
+              : (clip.smartCropKeyframes?.length ?? 0) > 0
+                ? `Re-analyze (${clip.smartCropKeyframes!.length} windows)`
+                : 'Analyze smart crop'}
+          </button>
+          {(clip.smartCropKeyframes?.length ?? 0) > 0 && (
+            <div className="field-hint">
+              {shotInfo ?? `${clip.smartCropKeyframes!.length} crop window${clip.smartCropKeyframes!.length === 1 ? '' : 's'} stored. The preview follows the active window while you play.`}
+            </div>
+          )}
+          {(clip.smartCropKeyframes?.length ?? 0) > 0 && (
+            <button
+              className="btn sm ghost"
+              onClick={() => props.updateClip({ smartCropKeyframes: [] })}
+              title="Clear stored crop keyframes"
+            >
+              Clear keyframes
+            </button>
+          )}
+        </div>
+      )}
+
+      {hasBars && clip.cropMode !== 'fit' && (
+        <div className="field-hint" style={{ borderLeft: '2px solid var(--warn)', paddingLeft: 8 }}>
+          Baked-in bars detected on this source ({project.contentRect!.width}×{project.contentRect!.height} content in {project.width}×{project.height}).
+          All crops exclude them automatically — exports fill the frame.
+        </div>
+      )}
 
       {clip.cropMode === 'manual' && (
         <>

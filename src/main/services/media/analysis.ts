@@ -122,7 +122,7 @@ export async function detectSilence(
 
 // -------------------------------------------------------------- playback ---
 
-export type PlaybackVerdict = 'native' | 'proxy' | 'audio-only'
+export type PlaybackVerdict = 'native' | 'proxy' | 'audio-only' | 'missing'
 
 const NATIVE_VIDEO_CODECS = new Set(['h264', 'vp8', 'vp9', 'av1'])
 const NATIVE_AUDIO_CODECS = new Set(['aac', 'mp3', 'opus', 'vorbis', 'flac', 'pcm_s16le', 'pcm_s24le'])
@@ -162,11 +162,26 @@ export function proxyStatus(ctx: AppContext, project: Project): {
   reason: string
   proxyExists: boolean
   proxyPath: string | null
+  sourceExists: boolean
+  sourcePath: string | null
 } {
+  // A moved/deleted source file is its own state (§13-14): the UI offers a
+  // relink instead of a dead black player.
+  const sourceExists = Boolean(project.sourcePath && fs.existsSync(project.sourcePath))
+  if (project.sourcePath && !sourceExists) {
+    return {
+      verdict: 'missing',
+      reason: `The source file "${project.sourceFilename ?? path.basename(project.sourcePath)}" is no longer at its registered location.`,
+      proxyExists: false,
+      proxyPath: null,
+      sourceExists,
+      sourcePath: project.sourcePath
+    }
+  }
   const v = playbackVerdict(project)
   const p = proxyPathFor(ctx, project.id)
   const proxyExists = fs.existsSync(p) && fs.statSync(p).size > 1024
-  return { ...v, proxyExists, proxyPath: proxyExists ? p : null }
+  return { ...v, proxyExists, proxyPath: proxyExists ? p : null, sourceExists, sourcePath: project.sourcePath ?? null }
 }
 
 /**

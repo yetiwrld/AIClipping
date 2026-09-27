@@ -2332,3 +2332,71 @@ details.error-details pre {
   border-color: var(--warn);
   color: var(--warn);
 }
+
+/* ------------------------------------------------------- source player -- */
+
+.source-player-panel {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+}
+
+.source-player-panel video {
+  display: block;
+  width: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.source-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-1);
+}
+
+.source-controls .ctl {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  color: var(--text-1);
+  cursor: pointer;
+}
+
+.source-controls .ctl:hover {
+  background: var(--bg-3);
+  border-color: var(--border-2);
+}
+
+.source-controls .scrub {
+  flex: 1;
+  min-width: 60px;
+}
+
+.source-controls select.tiny {
+  font-size: 11px;
+  padding: 3px 4px;
+  height: 26px;
+}
+
+.source-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border-top: 1px solid var(--border);
+}
+
+.source-note.warn {
+  color: var(--warn);
+}

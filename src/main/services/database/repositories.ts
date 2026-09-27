@@ -41,6 +41,7 @@ export interface ProjectRow {
   height: number | null; fps: number | null; has_audio: number
   video_codec: string | null; audio_codec: string | null; size_bytes: number | null
   rotation: number; status: string; status_message: string | null; settings: string
+  content_left: number | null; content_top: number | null; content_width: number | null; content_height: number | null
 }
 
 function defaultProjectSettings(): ProjectSettings {
@@ -67,6 +68,10 @@ export function mapProject(row: ProjectRow): Project {
     audioCodec: row.audio_codec,
     sizeBytes: row.size_bytes,
     rotation: row.rotation ?? 0,
+    contentRect:
+      row.content_left != null && row.content_top != null && row.content_width != null && row.content_height != null
+        ? { left: row.content_left, top: row.content_top, width: row.content_width, height: row.content_height }
+        : null,
     status: row.status as ProjectStatus,
     statusMessage: row.status_message,
     settings: { durationPreset: settings.durationPreset, maxCandidates: settings.maxCandidates }
@@ -281,6 +286,7 @@ interface ClipRow {
   caption_timing_offsets: string; silence_cuts: string; title: string; description: string; hashtags: string
   cta: string; metadata_provider: string | null; status: string
   output_resolution: string; output_quality: string; output_fps: string
+  smart_crop_keyframes: string
   created_at: string; updated_at: string
 }
 
@@ -305,6 +311,7 @@ function mapClip(row: ClipRow): Clip {
     outputResolution: row.output_resolution as Clip['outputResolution'],
     outputQuality: row.output_quality as Clip['outputQuality'],
     outputFps: (row.output_fps === 'source' ? 'source' : Number(row.output_fps)) as Clip['outputFps'],
+    smartCropKeyframes: parseJson<Clip['smartCropKeyframes']>(row.smart_crop_keyframes, []),
     title: row.title,
     description: row.description,
     hashtags: parseJson<string[]>(row.hashtags, []),
@@ -323,8 +330,8 @@ export const clipsRepo = {
       `INSERT INTO clips (id, candidate_id, project_id, start_time, end_time, aspect_ratio, crop_mode,
         crop_x, zoom, caption_style_id, caption_overrides, caption_text_edits, caption_cue_splits,
         caption_cue_merges, caption_timing_offsets, silence_cuts, output_resolution, output_quality,
-        output_fps, title, description, hashtags, cta, metadata_provider, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        output_fps, smart_crop_keyframes, title, description, hashtags, cta, metadata_provider, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         clip.id, clip.candidateId, clip.projectId, clip.startTime, clip.endTime,
         clip.aspectRatio, clip.cropMode, clip.cropX, clip.zoom, clip.captionStyleId,
@@ -332,7 +339,7 @@ export const clipsRepo = {
         JSON.stringify(clip.captionCueSplits ?? {}), JSON.stringify(clip.captionCueMerges ?? {}),
         JSON.stringify(clip.captionTimingOffsets ?? {}), JSON.stringify(clip.silenceCuts ?? []),
         clip.outputResolution ?? '1080p', clip.outputQuality ?? 'standard',
-        String(clip.outputFps ?? 'source'),
+        String(clip.outputFps ?? 'source'), JSON.stringify(clip.smartCropKeyframes ?? []),
         clip.title, clip.description, JSON.stringify(clip.hashtags), clip.cta,
         clip.metadataProvider, clip.status, ts, ts
       ]
@@ -358,11 +365,12 @@ export const clipsRepo = {
       hashtags: 'hashtags', cta: 'cta', metadataProvider: 'metadata_provider', status: 'status',
       captionCueSplits: 'caption_cue_splits', captionCueMerges: 'caption_cue_merges',
       captionTimingOffsets: 'caption_timing_offsets', silenceCuts: 'silence_cuts',
-      outputResolution: 'output_resolution', outputQuality: 'output_quality', outputFps: 'output_fps'
+      outputResolution: 'output_resolution', outputQuality: 'output_quality', outputFps: 'output_fps',
+      smartCropKeyframes: 'smart_crop_keyframes'
     }
     const CLIP_JSON_FIELDS = new Set([
       'hashtags', 'captionOverrides', 'captionTextEdits', 'captionCueSplits',
-      'captionCueMerges', 'captionTimingOffsets', 'silenceCuts'
+      'captionCueMerges', 'captionTimingOffsets', 'silenceCuts', 'smartCropKeyframes'
     ])
     const sets: string[] = []
     const values: unknown[] = []
@@ -370,7 +378,7 @@ export const clipsRepo = {
       if (field in patch) {
         let value = patch[field]
         if (CLIP_JSON_FIELDS.has(field)) {
-          value = JSON.stringify(value ?? (field === 'hashtags' || field === 'silenceCuts' ? [] : {}))
+          value = JSON.stringify(value ?? (field === 'hashtags' || field === 'silenceCuts' || field === 'smartCropKeyframes' ? [] : {}))
         }
         if (field === 'outputFps') value = String(value)
         sets.push(`${column} = ?`)
@@ -579,6 +587,7 @@ export const settingsRepo = {
         crf: 18,
         useHardwareEncoder: false,
         audioNormalize: true,
+        codec: 'h264',
         defaultResolution: '1080p',
         defaultQuality: 'standard',
         hardwareEncoding: 'auto',
