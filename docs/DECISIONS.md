@@ -145,3 +145,35 @@ render for 9:16/4:5/1:1/16:9.
 the live E2E smoke (import → transcript → analyze → clip → render) pass; the
 only behavioral additions are dashboard rename/delete affordances calling the
 existing validated IPC methods.
+
+## ADR-014b — QA hardening of the AI provider layer
+*(folded into the redesign QA session)*
+
+## ADR-015 — Provider auth styles, strict response validation, real connection test
+**Context**: final QA demanded genuine OpenAI-compatible compatibility
+(GonkaRouter documents both `Authorization: Bearer` and `x-api-key`), proof
+that the Test button makes a live request, and graceful handling of
+provider-shape differences.
+**Decision**:
+1. Per-provider `authStyle` (`bearer` default | `x-api-key` | `both`) —
+   Bearer stays the default so existing providers are untouched; gateways
+   that require `x-api-key` can select it in the UI.
+2. Strict OpenAI-compatible response validation: 200 bodies are parsed and
+   must yield message content (string/array/legacy `choices[0].text`);
+   otherwise `AI_PROVIDER_INVALID_RESPONSE` with diagnostics (embedded
+   `error` objects surfaced, `finish_reason: length` → max-token hint).
+   The raw envelope is never returned as if it were the model's answer.
+3. `settings.testAiProvider` extracted to `services/ai/test.ts`: sends
+   "Reply with exactly: pong", succeeds only when the model answers, returns
+   `{ok, message, endpoint, model, latencyMs}` for observability; maps
+   401/403/404/429/5xx/network to specific user-facing messages.
+4. `response_format` fallback extended to HTTP 422 (400 already covered),
+   abort signal preserved on retry.
+5. Base-URL schema tightened: empty or complete http(s) URL; settings errors
+   name the offending field.
+6. Two-level settings merge (B-010 fix) so partial provider patches work.
+**Consequences**: 26 new provider tests (37 total in that suite), live
+verification against `scripts/mock-gonka.ts` (offline GonkaRouter-faithful
+gateway: auth, /v1 URL construction, discovery/scoring/metadata), zero
+changes to prompt/analysis business logic. Live GonkaRouter remains untested
+(no key in this environment) and is a documented user action.

@@ -171,3 +171,30 @@ behavioral coverage existed for visuals, so verification = typecheck + build +
 race, non-blocking). **Not automatable here**: pixel-level screenshots (no
 browser binaries in sandbox) — final visual sign-off happens in the Windows
 run book alongside the existing manual checks.
+
+
+---
+
+## Final QA + button audit + provider verification (2026-09-27, session 3)
+
+| Gate | Result |
+| --- | --- |
+| `npm run test:unit` | **96/96** |
+| `npm run test:integration` | **64/64** (ai-provider suite grew 11 → 37 tests) |
+| `npm test` | **160/160** (11 files) |
+| `npm run typecheck` | clean |
+| `npm run build` | clean |
+| Button audit | 76/76 wired; 0 icon-only buttons without labels; orders reviewed |
+| IPC surface | 46 methods: contract = handlers = payload schemas; all renderer calls resolve |
+| Live provider matrix | no key / wrong key 401 / unreachable / malformed URL / valid+pong+latency — all correct |
+| Live AI workflow | analysis (2 candidates, 8 audit dims, scores) → clip → AI metadata → render → export, via mock gateway |
+| Editor round-trip | trim (+invalid rejected), captions+overrides, crop+aspect, metadata; 4:5 render = exactly 1080×1350 |
+| Persistence | full restart: settings, key, project, transcript, candidates, clip metadata, render — all intact |
+| Key-leak audit | 0 occurrences in logs and diagnostics export |
+| `npm run dist:win` | blocked by sandbox network at Electron binary download (config validated; run on Windows) |
+| `npm run dev` | not executable in headless sandbox |
+| GonkaRouter live | **NOT TESTED — no API key in this environment** (mock-verified end-to-end) |
+
+Bugs fixed this session: B-010 (settings merge — provider saves were broken),
+superficial provider test, weak response validation, Bearer-only auth,
+400-only JSON fallback, base-URL schema hole, double-submit windows.

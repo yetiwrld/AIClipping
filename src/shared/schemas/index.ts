@@ -12,13 +12,30 @@ export const isoDateSchema = z.string().min(4)
 
 // ------------------------------------------------------------------ settings
 
+const httpUrlOrEmpty = z
+  .string()
+  .max(300)
+  .refine(
+    (v) => {
+      if (v === '') return true
+      try {
+        const u = new URL(v)
+        return u.protocol === 'http:' || u.protocol === 'https:'
+      } catch {
+        return false
+      }
+    },
+    { message: 'Base URL must be a complete http(s) URL, e.g. https://api.gonkarouter.io/v1' }
+  )
+
 export const aiProviderRuntimeConfigSchema = z.object({
-  baseUrl: z.string().url().or(z.string().max(200)),
+  baseUrl: httpUrlOrEmpty,
   model: z.string().max(120),
   temperature: z.number().min(0).max(2),
   maxTokens: z.number().int().min(64).max(128000),
   jsonMode: z.boolean(),
-  supportsAudio: z.boolean()
+  supportsAudio: z.boolean(),
+  authStyle: z.enum(['bearer', 'x-api-key', 'both']).optional()
 })
 
 export const appSettingsSchema = z.object({

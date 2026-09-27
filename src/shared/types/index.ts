@@ -235,6 +235,8 @@ export interface TaskInfo {
 export type DurationPresetId = 'short' | 'medium' | 'long' | 'mixed'
 export type PlatformPresetId = 'tiktok' | 'reels' | 'shorts' | 'generic'
 
+export type AiAuthStyle = 'bearer' | 'x-api-key' | 'both'
+
 export interface AiProviderRuntimeConfig {
   baseUrl: string
   model: string
@@ -244,6 +246,13 @@ export interface AiProviderRuntimeConfig {
   jsonMode: boolean
   /** Endpoint also accepts audio transcription uploads */
   supportsAudio: boolean
+  /**
+   * How the API key is sent. `bearer` (Authorization: Bearer …) is the
+   * OpenAI-compatible default and works with OpenAI, OpenRouter, Groq,
+   * Together and GonkaRouter. Gateways that require the `x-api-key` header
+   * instead can select it without affecting other providers.
+   */
+  authStyle?: AiAuthStyle
 }
 
 export type AnalysisProviderId = 'heuristic-local' | 'openai-compatible' | 'anthropic' | 'none'

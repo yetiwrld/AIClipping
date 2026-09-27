@@ -46,8 +46,25 @@ function getProviderConfig(ctx: AppContext, providerId: ChatProviderId): AiProvi
     maxTokens: cfg?.maxTokens ?? 2048,
     jsonMode: cfg?.jsonMode ?? false,
     supportsAudio: cfg?.supportsAudio ?? false,
+    authStyle: cfg?.authStyle,
     key
   }
+}
+
+/** Headers for the configured auth style. `bearer` is the OpenAI-compatible
+ *  default (works with OpenAI, OpenRouter, Groq, Together, GonkaRouter);
+ *  gateways that want `x-api-key` can select it in settings. */
+export function authHeaders(key: string, style: 'bearer' | 'x-api-key' | 'both' | undefined): Record<string, string> {
+  if (style === 'x-api-key') return { 'x-api-key': key }
+  if (style === 'both') return { Authorization: `Bearer ${key}`, 'x-api-key': key }
+  return { Authorization: `Bearer ${key}` }
+}
+
+/** OpenAI-compatible endpoint URL: tolerates trailing slashes and a base
+ *  that already includes /chat/completions. `/v1` bases append correctly. */
+export function openaiChatUrl(baseUrl: string): string {
+  const base = baseUrl.replace(/\/+$/, '')
+  return base.endsWith('/chat/completions') ? base : `${base}/chat/completions`
 }
 
 async function openaiChat(ctx: AppContext, messages: ChatMessage[], opts: ChatOptions): Promise<string> {
@@ -59,8 +76,7 @@ async function openaiChat(ctx: AppContext, messages: ChatMessage[], opts: ChatOp
     throw new AppError('AI_NO_KEY', 'No API key is set for this provider.', 'Add the key in Settings → AI.')
   }
 
-  const base = cfg.baseUrl.replace(/\/+$/, '')
-  const url = base.endsWith('/chat/completions') ? base : `${base}/chat/completions`
+  const url = openaiChatUrl(cfg.baseUrl)
   const body: Record<string, unknown> = {
     model: cfg.model,
     messages,
@@ -68,28 +84,25 @@ async function openaiChat(ctx: AppContext, messages: ChatMessage[], opts: ChatOp
     max_tokens: opts.maxTokens ?? cfg.maxTokens
   }
   if (opts.jsonMode ?? cfg.jsonMode) body.response_format = { type: 'json_object' }
+  const headers = { 'Content-Type': 'application/json', ...authHeaders(cfg.key, cfg.authStyle) }
+  const signal = AbortSignal.any([opts.signal ?? new AbortController().signal, AbortSignal.timeout(opts.timeoutMs ?? 120_000)])
 
   let res: Response
   try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.key}` },
-      body: JSON.stringify(body),
-      signal: AbortSignal.any([opts.signal ?? new AbortController().signal, AbortSignal.timeout(opts.timeoutMs ?? 120_000)])
-    })
+    res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal })
   } catch (err) {
     if (opts.signal?.aborted) throw new AppError('PROCESS_CANCELLED', 'The AI request was cancelled.')
     throw new AppError('AI_NETWORK_ERROR', `The AI endpoint could not be reached.`, 'Check the base URL and your internet connection in Settings → AI.', String(err))
   }
-  if (res.status === 400 && body.response_format) {
-    // Some endpoints reject response_format — retry once without it
+  if ((res.status === 400 || res.status === 422) && body.response_format) {
+    // Some gateways reject response_format — retry once without it (§JSON-mode compatibility)
     delete body.response_format
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.key}` },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 120_000)
-    })
+    try {
+      res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal })
+    } catch (err) {
+      if (opts.signal?.aborted) throw new AppError('PROCESS_CANCELLED', 'The AI request was cancelled.')
+      throw new AppError('AI_NETWORK_ERROR', `The AI endpoint could not be reached.`, 'Check the base URL and your internet connection in Settings → AI.', String(err))
+    }
   }
   return finishResponse(res, 'openai-compatible')
 }
@@ -155,17 +168,41 @@ async function finishResponse(res: Response, provider: string): Promise<string> 
   if (!res.ok) {
     throw new AppError('AI_HTTP_ERROR', `The AI provider returned HTTP ${res.status}.`, 'Check the provider configuration in Settings → AI.', text.slice(-800))
   }
+  if (provider !== 'openai-compatible') return text
+
+  // Strict validation: compatible providers differ in output shape. Never
+  // return the raw envelope as if it were the model's answer.
+  let parsed: unknown
   try {
-    if (provider === 'openai-compatible') {
-      const parsed = JSON.parse(text)
-      const content = parsed?.choices?.[0]?.message?.content
-      if (typeof content === 'string') return content
-      if (Array.isArray(content)) return content.map((c: { text?: string }) => c.text ?? '').join('')
-    }
-    return text
+    parsed = JSON.parse(text)
   } catch {
-    throw new AppError('AI_BAD_RESPONSE', 'The AI provider response could not be read.', undefined, text.slice(-600))
+    throw new AppError('AI_BAD_RESPONSE', 'The AI provider response was not valid JSON.', 'The endpoint may not be an OpenAI-compatible chat API — check the base URL.', text.slice(-600))
   }
+  const body = parsed as {
+    error?: { message?: string; code?: string } | string
+    choices?: Array<{ message?: { content?: unknown }; text?: string; finish_reason?: string }>
+  }
+  // Some gateways answer 200 with an error object
+  if (body.error) {
+    const em = typeof body.error === 'string' ? body.error : body.error.message ?? body.error.code ?? 'unknown error'
+    throw new AppError('AI_PROVIDER_INVALID_RESPONSE', `The provider returned an error: ${em}`, 'Check the model name and provider account.', text.slice(-600))
+  }
+  const choice = body.choices?.[0]
+  const content = choice?.message?.content
+  if (typeof content === 'string' && content.length > 0) return content
+  if (Array.isArray(content) && content.length > 0) {
+    const joined = content.map((c: { text?: string }) => c.text ?? '').join('')
+    if (joined) return joined
+  }
+  if (typeof choice?.text === 'string' && choice.text.length > 0) return choice.text // legacy completions shape
+  throw new AppError(
+    'AI_PROVIDER_INVALID_RESPONSE',
+    'The provider responded, but the reply contained no message content.',
+    choice?.finish_reason === 'length'
+      ? 'The reply was cut off by the max-token limit — raise “Max output tokens” in Settings → AI.'
+      : 'Check that the model name is correct and supports chat completions.',
+    text.slice(-600)
+  )
 }
 
 // ------------------------------------------------------------- JSON repair --

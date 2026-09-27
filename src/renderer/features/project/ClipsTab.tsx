@@ -12,6 +12,7 @@ export function ClipsTab() {
   const data = useDataStore()
   const project = data.activeProject!
   const [busyClipId, setBusyClipId] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
   const [error, setError] = useState<unknown>(null)
 
   async function render(clipId: string) {
@@ -39,6 +40,8 @@ export function ClipsTab() {
   }
 
   async function exportClips(clipIds: string[]) {
+    if (exporting) return
+    setExporting(true)
     try {
       const result = await api['exports.run']({ clipIds, includeMetadata: true })
       app.toast({
@@ -49,6 +52,8 @@ export function ClipsTab() {
       })
     } catch (err) {
       app.toast({ level: 'error', ...errMessage(err) })
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -76,8 +81,8 @@ export function ClipsTab() {
         <div className="row" style={{ padding: '0 8px 8px' }}>
           <span className="tiny">{renderable.length} rendered clip{renderable.length === 1 ? '' : 's'} ready to export</span>
           <span style={{ flex: 1 }} />
-          <button className="btn sm" onClick={() => void exportClips(renderable.map((c) => c.id))}>
-            <Package size={12} /> Export all rendered
+          <button className="btn sm" onClick={() => void exportClips(renderable.map((c) => c.id))} disabled={exporting}>
+            {exporting ? <Spinner size={11} /> : <Package size={12} />} {exporting ? 'Exporting…' : 'Export all rendered'}
           </button>
         </div>
       )}
@@ -87,6 +92,7 @@ export function ClipsTab() {
             key={clip.id}
             clip={clip}
             busy={busyClipId === clip.id}
+            exporting={exporting}
             renders={data.renders.filter((r) => r.clipId === clip.id)}
             onRender={() => void render(clip.id)}
             onEdit={() => app.openEditor(clip.id, clip.projectId)}
@@ -102,6 +108,7 @@ export function ClipsTab() {
 function ClipRow({
   clip,
   busy,
+  exporting,
   renders,
   onRender,
   onEdit,
@@ -110,6 +117,7 @@ function ClipRow({
 }: {
   clip: import('@shared/types').Clip
   busy: boolean
+  exporting: boolean
   renders: import('@shared/types').RenderJob[]
   onRender: () => void
   onEdit: () => void
@@ -179,7 +187,7 @@ function ClipRow({
         </button>
         {doneRender && (
           <>
-            <button className="btn sm" onClick={onExport}>
+            <button className="btn sm" onClick={onExport} disabled={exporting}>
               <Package size={12} /> Export
             </button>
             <button

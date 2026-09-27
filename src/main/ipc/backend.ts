@@ -12,6 +12,7 @@ import {
 } from '../services/projects'
 import { getTranscript, importTranscript, runTranscription } from '../services/transcription'
 import { getCandidates, listAnalysisProviders, runAnalysis, updateCandidateStatus } from '../services/ai/analysis'
+import { testAiProvider as testAiProviderService } from '../services/ai/test'
 import { createClipFromCandidate, deleteClip, generateClipMetadata, listClips, updateClip } from '../services/clips'
 import { getSettings, updateSettings } from '../services/settings'
 import { buildDiagnostics, checkDependencies, exportDiagnostics } from '../services/diagnostics'
@@ -198,7 +199,7 @@ function runTask(taskId: string, fn: (report: import('../services/tasks/index').
     'settings.deleteSecret': (p: { key: string }) => ctx.secrets.delete(p.key),
     'settings.secretHints': () => ctx.secrets.hints(),
     'settings.testAiProvider': (p: { providerId: 'openai-compatible' | 'anthropic'; baseUrl?: string; model?: string }) =>
-      testAiProvider(ctx, p),
+      testAiProviderService(ctx, p),
 
     'exports.run': (p: { clipIds: string[]; includeMetadata?: boolean }) => runExport(ctx, p.clipIds, p.includeMetadata ?? true),
 
@@ -257,43 +258,4 @@ function runTask(taskId: string, fn: (report: import('../services/tasks/index').
   }
 
   return { ctx, tasks, renders, host, invoke }
-}
-
-async function testAiProvider(
-  ctx: AppContext,
-  p: { providerId: 'openai-compatible' | 'anthropic'; baseUrl?: string; model?: string }
-): Promise<{ ok: boolean; message: string }> {
-  const settings = getSettings(ctx)
-  const key = ctx.secrets.get(`ai:${p.providerId}`)
-  if (!key) return { ok: false, message: 'No API key is set for this provider.' }
-  const cfg = p.providerId === 'anthropic' ? settings.ai.anthropic : settings.ai.openai
-  const baseUrl = p.baseUrl || cfg.baseUrl
-  const model = p.model || cfg.model
-  if (!baseUrl || !model) return { ok: false, message: 'Base URL and model are required.' }
-
-  try {
-    if (p.providerId === 'anthropic') {
-      const res = await fetch(`${baseUrl.replace(/\/+$/, '').replace(/\/v1\/messages$/, '')}/v1/messages`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-        body: JSON.stringify({ model, max_tokens: 16, messages: [{ role: 'user', content: 'Reply with OK' }] }),
-        signal: AbortSignal.timeout(30000)
-      })
-      if (res.ok) return { ok: true, message: `Connected to Anthropic (${model}).` }
-      if (res.status === 401) return { ok: false, message: 'The API key was rejected (401).' }
-      return { ok: false, message: `HTTP ${res.status} — check the model name.` }
-    }
-    const res = await fetch(`${baseUrl.replace(/\/+$/, '').replace(/\/chat\/completions$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, max_tokens: 16, messages: [{ role: 'user', content: 'Reply with OK' }] }),
-      signal: AbortSignal.timeout(30000)
-    })
-    if (res.ok) return { ok: true, message: `Connected (${model}).` }
-    if (res.status === 401) return { ok: false, message: 'The API key was rejected (401).' }
-    if (res.status === 404) return { ok: false, message: 'Endpoint or model not found (404) — check base URL and model.' }
-    return { ok: false, message: `HTTP ${res.status}.` }
-  } catch (err) {
-    return { ok: false, message: `Could not reach the endpoint: ${err instanceof Error ? err.message : 'network error'}` }
-  }
 }

@@ -116,3 +116,16 @@ Living task journal. Phases reference `DEVELOPMENT_PLAN.md`.
 - [x] B-008 fix (delete-during-import crash + fire-and-forget task containment)
 - [x] Docs: ADR-014, B-008/B-009, CHANGELOG, TEST_RESULTS
 - [ ] Windows manual visual pass (fold into the existing run book §Manual)
+
+
+## Phase 13 — Final QA, button audit & provider hardening — DONE
+- [x] Full code review (main/preload/renderer/shared/prompts/tests/scripts/docs/server)
+- [x] Button audit: 76/76 wired, ordering + accessibility verified
+- [x] IPC surface audit: 46/46 contract↔handler↔schema consistency
+- [x] B-010 fix: two-level settings merge (provider form saves)
+- [x] Provider hardening: authStyle, strict validation, real test button, 422 fallback, URL schema
+- [x] 26 new provider tests → 160/160 total; typecheck + build clean
+- [x] Live E2E: provider matrix, AI workflow via mock gateway, editor round-trip, restart persistence, key-leak audit
+- [x] Docs: RUNNING_WINDOWS / API_SETUP / QA_REPORT / RELEASE_CHECKLIST
+- [ ] Windows machine: `npm run dist:win` + packaged smoke test (release checklist §2–4)
+- [ ] GonkaRouter live request (user enters key → Test connection)

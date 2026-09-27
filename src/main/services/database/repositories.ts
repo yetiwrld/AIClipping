@@ -546,8 +546,8 @@ export const settingsRepo = {
       general: { firstRunCompleted: false },
       ai: {
         activeProvider: 'none',
-        openai: { baseUrl: 'https://api.openai.com/v1', model: '', temperature: 0.4, maxTokens: 4096, jsonMode: false, supportsAudio: false },
-        anthropic: { baseUrl: 'https://api.anthropic.com', model: '', temperature: 0.4, maxTokens: 4096, jsonMode: false, supportsAudio: false }
+        openai: { baseUrl: 'https://api.openai.com/v1', model: '', temperature: 0.4, maxTokens: 4096, jsonMode: false, supportsAudio: false, authStyle: 'bearer' },
+        anthropic: { baseUrl: 'https://api.anthropic.com', model: '', temperature: 0.4, maxTokens: 4096, jsonMode: false, supportsAudio: false, authStyle: 'bearer' }
       },
       transcription: { providerId: 'import-file', language: 'auto', whisperModel: 'base', whisperCompute: 'int8' },
       video: { targetDurationPreset: 'medium', renderPreset: 'veryfast', crf: 18, useHardwareEncoder: false, audioNormalize: true },

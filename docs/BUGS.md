@@ -86,3 +86,19 @@ Format: symptom → cause → fix → regression test.
   shutdown path logs `database persisted` reliably).
 - **Status**: open, non-blocking (tests 134/134, exit code 0). Revisit if it
   flakes CI.
+
+## B-010 — provider settings could not be saved from the UI (critical)
+- **Symptom**: changing any field in Settings → AI providers (base URL,
+  model, temperature…) failed with "The settings update failed validation."
+  Found in the final QA button/form audit — the provider form had never been
+  exercised end-to-end through the real IPC path before.
+- **Cause**: `updateSettings` merged patches one level deep
+  (`{...currentSection, ...patchSection}`), so the form's partial patch
+  `{ ai: { openai: { baseUrl } } }` replaced the entire `ai.openai` object;
+  the now-missing required fields (temperature, maxTokens, jsonMode,
+  supportsAudio) failed the schema.
+- **Fix**: two-level merge (section → provider/field) in
+  `src/main/services/settings/index.ts`, preserving flat sections unchanged.
+  Regression test: partial patch preserves sibling fields and persists.
+- **Verified**: live through the preview API — partial save keeps
+  temperature/maxTokens/jsonMode and survives restart.

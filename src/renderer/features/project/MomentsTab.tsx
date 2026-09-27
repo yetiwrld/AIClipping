@@ -43,6 +43,11 @@ export function MomentsTab() {
   }, [data.candidates])
 
   async function analyze(providerId: 'heuristic-local' | 'openai-compatible' | 'anthropic') {
+    // Duplicate-submission guard: refuse while an analyze task is already in flight
+    if (data.tasks.some((t) => t.type === 'analyze' && t.projectId === project.id && (t.state === 'running' || t.state === 'queued'))) {
+      app.toast({ level: 'warn', message: 'An analysis is already running for this project.' })
+      return
+    }
     setError(null)
     setBusy(true)
     try {

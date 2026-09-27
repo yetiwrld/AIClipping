@@ -83,7 +83,7 @@ export interface ClipwrightApi {
     providerId: 'openai-compatible' | 'anthropic'
     baseUrl?: string
     model?: string
-  }): Promise<{ ok: boolean; message: string }>
+  }): Promise<{ ok: boolean; message: string; endpoint: string; model: string; latencyMs: number | null }>
 
   // export
   'exports.run'(p: { clipIds: string[]; includeMetadata?: boolean }): Promise<ExportResult>

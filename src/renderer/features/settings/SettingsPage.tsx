@@ -78,7 +78,7 @@ function AiSection() {
   const settings = app.settings!
   const [hints, setHints] = useState<Record<string, string>>({})
   const [testing, setTesting] = useState<string | null>(null)
-  const [testResult, setTestResult] = useState<Record<string, string>>({})
+  const [testResult, setTestResult] = useState<Record<string, { ok: boolean; message: string; endpoint: string; model: string; latencyMs: number | null }>>({})
   const [keyDraft, setKeyDraft] = useState<Record<string, string>>({})
   const [error, setError] = useState<unknown>(null)
 
@@ -109,11 +109,17 @@ function AiSection() {
 
   async function test(providerId: 'openai-compatible' | 'anthropic') {
     setTesting(providerId)
+    setTestResult((r) => {
+      const next = { ...r }
+      delete next[providerId]
+      return next
+    })
     try {
       const result = await api['settings.testAiProvider']({ providerId })
-      setTestResult((r) => ({ ...r, [providerId]: result.message }))
+      setTestResult((r) => ({ ...r, [providerId]: result }))
     } catch (err) {
-      setTestResult((r) => ({ ...r, [providerId]: errMessage(err).message }))
+      const { message } = errMessage(err)
+      setTestResult((r) => ({ ...r, [providerId]: { ok: false, message, endpoint: '', model: '', latencyMs: null } }))
     } finally {
       setTesting(null)
     }
@@ -204,9 +210,10 @@ function ProviderForm(props: {
   onSaveKey: (v: string) => void
   onTest: () => void
   testing: boolean
-  testResult?: string
+  testResult?: { ok: boolean; message: string; endpoint: string; model: string; latencyMs: number | null }
   audioOption?: boolean
 }) {
+  const app = useAppStore()
   const [local, setLocal] = useState(props.config)
   return (
     <div className="settings-section stack">
@@ -218,11 +225,27 @@ function ProviderForm(props: {
       <div className="tiny">{props.providers}</div>
 
       <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Field label={props.providerId === 'anthropic' ? 'Base URL (blank = official API)' : 'Base URL (e.g. https://api.openai.com/v1)'}>
-          <input className="input" defaultValue={local.baseUrl} onBlur={(e) => { setLocal({ ...local, baseUrl: e.target.value }); props.onSave({ baseUrl: e.target.value }) }} />
+        <Field
+          label={props.providerId === 'anthropic' ? 'Base URL (blank = official API)' : 'Base URL (e.g. https://api.gonkarouter.io/v1)'}
+          hint={props.providerId === 'anthropic' ? undefined : 'OpenAI-compatible chat endpoint. Usually ends with /v1 — /chat/completions is appended automatically.'}
+        >
+          <input
+            className="input"
+            defaultValue={local.baseUrl}
+            placeholder="https://api.openai.com/v1"
+            onBlur={(e) => {
+              const v = e.target.value.trim()
+              if (v && !/^https?:\/\//i.test(v)) {
+                app.toast({ level: 'error', message: 'Base URL must start with http:// or https://', hint: `You entered “${v}” — include the full address, e.g. https://api.gonkarouter.io/v1` })
+                return
+              }
+              setLocal({ ...local, baseUrl: v })
+              props.onSave({ baseUrl: v })
+            }}
+          />
         </Field>
-        <Field label="Model">
-          <input className="input" defaultValue={local.model} onBlur={(e) => { setLocal({ ...local, model: e.target.value }); props.onSave({ model: e.target.value }) }} placeholder={props.providerId === 'anthropic' ? 'claude-sonnet-4-5' : 'gpt-4o-mini'} />
+        <Field label="Model" hint="Exactly as your provider lists it — e.g. gpt-4o-mini or zai-org/GLM-5.3-Flash. Never altered by the app.">
+          <input className="input" defaultValue={local.model} onBlur={(e) => { setLocal({ ...local, model: e.target.value.trim() }); props.onSave({ model: e.target.value.trim() }) }} placeholder={props.providerId === 'anthropic' ? 'claude-sonnet-4-5' : 'gpt-4o-mini'} />
         </Field>
       </div>
 
@@ -253,13 +276,27 @@ function ProviderForm(props: {
             onChange={(e) => setLocal({ ...local, temperature: parseFloat(e.target.value) })}
             onMouseUp={() => props.onSave({ temperature: local.temperature })} />
         </Field>
-        <Field label="Max output tokens">
+        <Field label="Max output tokens" hint="64 – 128,000. Raise it if replies are cut off mid-JSON.">
           <input className="input" type="number" min={64} max={128000} defaultValue={local.maxTokens}
-            onBlur={(e) => { const v = parseInt(e.target.value, 10) || 4096; setLocal({ ...local, maxTokens: v }); props.onSave({ maxTokens: v }) }} />
+            onBlur={(e) => { const raw = parseInt(e.target.value, 10); const v = Math.min(128000, Math.max(64, Number.isFinite(raw) ? raw : 4096)); setLocal({ ...local, maxTokens: v }); props.onSave({ maxTokens: v }) }} />
         </Field>
       </div>
 
-      <Switch label="Request JSON response format" hint="Some proxies reject response_format — disable if you get HTTP 400 errors." checked={local.jsonMode} onChange={(v) => { setLocal({ ...local, jsonMode: v }); props.onSave({ jsonMode: v }) }} />
+      {props.providerId === 'openai-compatible' && (
+        <Field label="API key header" hint="Bearer is the OpenAI-compatible standard (OpenAI, OpenRouter, Groq, Together, GonkaRouter). Switch to x-api-key only if your gateway requires it.">
+          <select
+            className="select"
+            value={local.authStyle ?? 'bearer'}
+            onChange={(e) => { setLocal({ ...local, authStyle: e.target.value as 'bearer' | 'x-api-key' | 'both' }); props.onSave({ authStyle: e.target.value as 'bearer' | 'x-api-key' | 'both' }) }}
+          >
+            <option value="bearer">Authorization: Bearer (default)</option>
+            <option value="x-api-key">x-api-key</option>
+            <option value="both">Send both headers</option>
+          </select>
+        </Field>
+      )}
+
+      <Switch label="Request JSON response format" hint="Some gateways reject response_format — the app automatically retries without it once; disable if errors persist." checked={local.jsonMode} onChange={(v) => { setLocal({ ...local, jsonMode: v }); props.onSave({ jsonMode: v }) }} />
       {props.audioOption && (
         <Switch
           label="This endpoint accepts audio transcription uploads"
@@ -271,10 +308,26 @@ function ProviderForm(props: {
 
       <div className="row">
         <button className="btn" onClick={props.onTest} disabled={props.testing}>
-          {props.testing ? <Spinner size={12} /> : <TestTube2 size={13} />} Test connection
+          {props.testing ? <Spinner size={12} /> : <TestTube2 size={13} />} {props.testing ? 'Testing…' : 'Test connection'}
         </button>
-        {props.testResult && <span className="tiny">{props.testResult}</span>}
+        {props.testResult && (
+          <span className={`status ${props.testResult.ok ? 'success' : 'danger'}`}>
+            <span className="dot" />
+            {props.testResult.ok ? 'Connected' : 'Failed'}
+          </span>
+        )}
       </div>
+      {props.testResult && (
+        <div className="field-hint" style={{ lineHeight: 1.6 }}>
+          {props.testResult.message}
+          <br />
+          <span className="tiny">
+            Endpoint <span className="mono">{props.testResult.endpoint || '—'}</span>
+            {' · '}Model <span className="mono">{props.testResult.model || '—'}</span>
+            {props.testResult.latencyMs != null && ` · ${(props.testResult.latencyMs / 1000).toFixed(1)}s`}
+          </span>
+        </div>
+      )}
     </div>
   )
 }

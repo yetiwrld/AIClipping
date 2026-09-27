@@ -3,6 +3,36 @@
 All notable changes to Clipwright Studio. Format loosely follows
 Keep a Changelog; versioning follows the app package version.
 
+## Unreleased — final QA & provider hardening
+
+### Fixed
+- B-010 (critical): provider settings could not be saved from the UI —
+  `settings.update` now merges two levels deep, so partial provider patches
+  preserve sibling fields; field-level validation messages.
+
+### Added
+- Provider connection test is now a real live request ("Reply with exactly:
+  pong") that verifies the model answered, measures latency and echoes the
+  endpoint/model — no more success-on-200-garbage.
+- Per-provider API key header style (Bearer / x-api-key / both; Bearer
+  default) for gateways such as GonkaRouter that document `x-api-key`.
+- Strict OpenAI-compatible response validation (`AI_PROVIDER_INVALID_RESPONSE`
+  with diagnostics; embedded error objects; legacy `choices[0].text`;
+  max-token cutoff hint).
+- JSON-mode auto-fallback extended to HTTP 422; cancel signal preserved.
+- Duplicate-submission guards for Analyze and Export.
+- `scripts/mock-gonka.ts` — offline OpenAI-compatible mock gateway for
+  provider plumbing verification without any key.
+- Docs: `RUNNING_WINDOWS.md`, `API_SETUP.md`, `QA_REPORT.md`,
+  `RELEASE_CHECKLIST.md`.
+
+### Verified
+- 160/160 tests (26 new provider tests); typecheck + build clean; live E2E:
+  provider test matrix, full AI workflow via mock gateway (analysis + audit
+  scores + metadata), editor round-trip incl. 4:5 render = 1080×1350,
+  persistence across restart, key-leak audit (logs + diagnostics clean),
+  76/76 buttons wired, 46/46 IPC methods consistent.
+
 ## Unreleased — professional UI redesign
 
 ### Changed
