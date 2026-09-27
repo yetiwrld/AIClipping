@@ -34,8 +34,11 @@ Verified: completes with `0 vulnerabilities` (Node 22, npm 10).
 npm run fixtures
 ```
 
-Generates `tests/fixtures/media/sample.mp4` (60s, 1280×720) and
-`tests/fixtures/transcript.json` with real FFmpeg. The files are gitignored.
+Generates `tests/fixtures/media/sample.mp4` (60s, 1280×720),
+`tests/fixtures/media/silence.mp4` (8.5s tone → 2.5s silence → tone, for the
+silence-detection tests) and `tests/fixtures/transcript.json` with real
+FFmpeg. The files are gitignored — run this once after checkout, or the
+integration suites will skip/fail with "Test fixtures are missing".
 
 ## Type checking
 
@@ -51,7 +54,8 @@ Verified: clean for both the Node (main/preload) and Web (renderer) projects.
 npm test
 ```
 
-Verified: **160/160 passing** (96 unit + 64 integration). Also available
+Verified: **203/203 passing** (130 unit + 73 integration; Windows-safe
+temp dirs + guarded cleanup hooks since the video-engine overhaul). Also available
 separately, both verified:
 
 ```text

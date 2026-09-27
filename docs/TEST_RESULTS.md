@@ -242,3 +242,24 @@ silence 2.5 s → tone 3 s, 123 KB) and `tests/fixtures/media/incompatible.avi`
 the new timeline/caption UI (vite build passes; components typecheck),
 hardware encoders (none in the sandbox — Auto mode falls back to libx264,
 Hardware-only mode is expected to fail here by design).
+
+## Session 5 addendum — Windows test-harness fixes (2026-09-27)
+
+The first Windows run of the overhaul failed 13 database tests with
+`mkdtemp '\\tmp\\...'` and skipped all fixture-dependent suites. Root causes
+were in the TEST HARNESS, not app code:
+
+- `tests/helpers/context.ts` + one database test hardcoded Unix `/tmp`;
+  Windows resolves that to `\tmp` on the current drive (which does not
+  exist). **Fixed:** `os.tmpdir()` everywhere.
+- `afterAll` hooks assumed `beforeAll` succeeded, turning one clear error
+  into three confusing ones (`cleanup is not a function`,
+  `server.close` of undefined). **Fixed:** no-op defaults + null guards.
+- `npm run fixtures` did not generate `silence.mp4` (new
+  silencedetect fixture). **Fixed:** the generator now produces it
+  (tone 3s → silence 2.5s → tone 3s, 640×360).
+
+Re-verified in-sandbox from a cold start: `rm -rf tests/fixtures/media
+tests/fixtures/transcript.json && npm run fixtures` regenerates everything;
+full suite **203/203 PASS** (was 202 — the regenerated transcript yields one
+more segment-boundary case).

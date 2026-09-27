@@ -16,8 +16,8 @@ import type { AiProviderRuntimeConfig } from '@shared/types'
  */
 
 let ctx: AppContext
-let cleanup: () => Promise<void>
-let server: http.Server
+let cleanup: (() => Promise<void>) | undefined
+let server: http.Server | null = null
 let baseUrl: string
 
 /** Canned behavior for the next request (mutated per test). */
@@ -41,7 +41,7 @@ beforeAll(async () => {
   ctx = made.ctx
   cleanup = made.cleanup
 
-  server = http.createServer((req, res) => {
+  const srv = http.createServer((req, res) => {
     let raw = ''
     req.on('data', (c) => (raw += c))
     req.on('end', () => {
@@ -50,17 +50,27 @@ beforeAll(async () => {
       res.end(behavior.body)
     })
   })
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-  baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  server = srv
+  await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  baseUrl = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`
 
   ctx.secrets.set('ai:openai-compatible', 'test-key-openai')
   ctx.secrets.set('ai:anthropic', 'test-key-anthropic')
 })
 
 afterAll(async () => {
-  await new Promise<void>((resolve) => server.close(() => resolve()))
-  await cleanup()
+  // Guarded: when beforeAll fails (e.g. missing fixtures), afterAll still runs
+  // and must not mask the real error with a secondary crash.
+  const s = server
+  if (s) await new Promise<void>((resolve) => s.close(() => resolve()))
+  await cleanup?.()
 })
+
+/** The mock server — tests only run after a successful beforeAll. */
+function srv(): http.Server {
+  if (!server) throw new Error('mock server was not started')
+  return server
+}
 
 afterEach(() => {
   behavior = { status: 200, body: '{}' }
@@ -73,8 +83,8 @@ function beforeEachConfig(): void {
 
 /** Restore the default mock handler after a custom one. */
 function restoreDefaultHandler(): void {
-  server.removeAllListeners('request')
-  server.on('request', (req, res) => {
+  srv().removeAllListeners('request')
+  srv().on('request', (req, res) => {
     let raw = ''
     req.on('data', (c) => (raw += c))
     req.on('end', () => {
@@ -109,8 +119,8 @@ describe('OpenAI-compatible adapter', () => {
 
   it('retries once without response_format when the endpoint rejects it (400)', async () => {
     let calls = 0
-    server.removeAllListeners('request')
-    server.on('request', (req, res) => {
+    srv().removeAllListeners('request')
+    srv().on('request', (req, res) => {
       let raw = ''
       req.on('data', (c) => (raw += c))
       req.on('end', () => {
@@ -133,8 +143,8 @@ describe('OpenAI-compatible adapter', () => {
       expect(behavior.lastRequest!.body.response_format).toBeUndefined()
     } finally {
       // restore the default handler
-      server.removeAllListeners('request')
-      server.on('request', (req, res) => {
+      srv().removeAllListeners('request')
+      srv().on('request', (req, res) => {
         let raw = ''
         req.on('data', (c) => (raw += c))
         req.on('end', () => {
@@ -336,8 +346,8 @@ describe('response validation (compatible providers differ in shape)', () => {
   })
   it('retries without response_format on 422 as well as 400', async () => {
     let calls = 0
-    server.removeAllListeners('request')
-    server.on('request', (req, res) => {
+    srv().removeAllListeners('request')
+    srv().on('request', (req, res) => {
       let raw = ''
       req.on('data', (c) => (raw += c))
       req.on('end', () => {

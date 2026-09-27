@@ -26,7 +26,9 @@ const FFPROBE = require('@ffprobe-installer/ffprobe').path as string
  */
 
 let ctx: AppContext
-let cleanup: () => Promise<void>
+// Default no-op: if beforeAll fails (missing fixtures), afterAll must not
+// turn one clear error into three confusing ones.
+let cleanup: () => Promise<void> = async () => undefined
 let projectId: string
 const events: AppEvent[] = []
 

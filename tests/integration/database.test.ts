@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { makeTestContext } from '../helpers/context'
 import type { AppContext } from '../../src/main/services/app-context'
@@ -102,7 +103,7 @@ describe('database: projects + state machine', () => {
   })
 
   it('persists across context restarts (sql.js atomic save)', async () => {
-    const root = fs.mkdtempSync(path.join('/tmp', 'clipwright-persist-'))
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'clipwright-persist-'))
     try {
       const { createAppContext } = await import('../../src/main/services/app-context')
       const first = await createAppContext({

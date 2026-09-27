@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { createAppContext } from '../../src/main/services/app-context'
 import type { AppContext } from '../../src/main/services/app-context'
@@ -14,7 +15,8 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..')
 let counter = 0
 
 export async function makeTestContext(): Promise<{ ctx: AppContext; cleanup: () => Promise<void> }> {
-  const root = fs.mkdtempSync(path.join('/tmp', 'clipwright-test-'))
+  // os.tmpdir() — the suite must run on Windows too (C:\tmp does not exist).
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'clipwright-test-'))
   const ctx = await createAppContext({
     workspaceRoot: root,
     appVersion: '0.0.0-test',
@@ -35,12 +37,17 @@ export async function makeTestContext(): Promise<{ ctx: AppContext; cleanup: () 
 
 export const FIXTURES_DIR = path.join(REPO_ROOT, 'tests', 'fixtures')
 export const SAMPLE_VIDEO = path.join(FIXTURES_DIR, 'media', 'sample.mp4')
+export const SILENCE_VIDEO = path.join(FIXTURES_DIR, 'media', 'silence.mp4')
 export const SAMPLE_TRANSCRIPT = path.join(FIXTURES_DIR, 'transcript.json')
 
 export function requireFixtures(): void {
-  if (!fs.existsSync(SAMPLE_VIDEO) || !fs.existsSync(SAMPLE_TRANSCRIPT)) {
+  const missing: string[] = []
+  if (!fs.existsSync(SAMPLE_VIDEO)) missing.push('sample.mp4')
+  if (!fs.existsSync(SILENCE_VIDEO)) missing.push('silence.mp4')
+  if (!fs.existsSync(SAMPLE_TRANSCRIPT)) missing.push('transcript.json')
+  if (missing.length > 0) {
     throw new Error(
-      'Test fixtures are missing. Run `npm run fixtures` first (generates tests/fixtures/media/sample.mp4 + transcript.json).'
+      `Test fixtures are missing: ${missing.join(', ')}. Run "npm run fixtures" first (generates tests/fixtures/media/ + transcript.json).`
     )
   }
 }

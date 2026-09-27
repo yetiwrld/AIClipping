@@ -10,6 +10,7 @@ const run = promisify(execFile)
  * tests (gitignored — run `npm run fixtures` after checkout).
  *
  *   tests/fixtures/media/sample.mp4      — 60s 1280x720 landscape test video
+ *   tests/fixtures/media/silence.mp4     — 8.5s tone/silence/tone (2.5s gap) for silencedetect tests
  *   tests/fixtures/transcript.json       — word-level transcript matching the video duration
  *
  * The transcript is scaled to exactly the video duration with a realistic
@@ -120,8 +121,28 @@ function makeTranscript(): void {
   console.log(`transcript.json — ${words.length} words, ${segments.length} segments, ${VIDEO_SECONDS}s (${wps} wps)`)
 }
 
+/** tone(3s) → silence(2.5s) → tone(3s): a known gap for silencedetect tests. */
+async function makeSilenceVideo(): Promise<void> {
+  const target = path.join(OUT_MEDIA, 'silence.mp4')
+  await run(FFMPEG, [
+    '-y', '-hide_banner', '-loglevel', 'error',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3',
+    '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=mono,atrim=duration=2.5',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3',
+    '-f', 'lavfi', '-i', 'testsrc=duration=8.5:size=640x360:rate=30',
+    '-filter_complex', '[0:a][1:a][2:a]concat=n=3:v=0:a=1[a]',
+    '-map', '3:v', '-map', '[a]',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p',
+    '-c:a', 'aac', '-ar', '44100',
+    '-shortest',
+    target
+  ])
+  console.log('silence.mp4 — 8.5s (tone 3s → silence 2.5s → tone 3s)')
+}
+
 async function main(): Promise<void> {
   await makeVideo()
+  await makeSilenceVideo()
   makeTranscript()
   console.log('\nFixtures ready in tests/fixtures/')
 }

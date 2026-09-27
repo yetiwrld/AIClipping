@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { makeTestContext, requireFixtures, SAMPLE_VIDEO, SAMPLE_TRANSCRIPT } from '../helpers/context'
+import { makeTestContext, requireFixtures, SAMPLE_VIDEO, SAMPLE_TRANSCRIPT, SILENCE_VIDEO } from '../helpers/context'
 import type { AppContext } from '../../src/main/services/app-context'
 import { createProject, importMediaFile, deleteProject } from '../../src/main/services/projects'
 import { importTranscript } from '../../src/main/services/transcription'
@@ -27,7 +27,9 @@ const FFPROBE = require('@ffprobe-installer/ffprobe').path as string
  */
 
 let ctx: AppContext
-let cleanup: () => Promise<void>
+// Default no-op: if beforeAll fails (missing fixtures), afterAll must not
+// turn one clear error into three confusing ones.
+let cleanup: () => Promise<void> = async () => undefined
 let projectId: string
 
 beforeAll(async () => {
@@ -88,7 +90,7 @@ describe('video engine overhaul — real FFmpeg integration', () => {
   it('detects a known 2.5s silence gap in a purpose-built fixture', async () => {
     // tone(3s) → silence(2.5s) → tone(3s); committed as tests/fixtures/media/silence.mp4
     const project = createProject(ctx, 'VE Silence Fixture')
-    await importMediaFile(ctx, project.id, path.join(path.dirname(SAMPLE_VIDEO), 'silence.mp4'))
+    await importMediaFile(ctx, project.id, SILENCE_VIDEO)
     const { getProject } = await import('../../src/main/services/projects')
     const loaded = getProject(ctx, project.id)!
     expect(loaded.hasAudio).toBe(true)
