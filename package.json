@@ -1,0 +1,53 @@
+{
+  "name": "clipwright-studio",
+  "productName": "Clipwright Studio",
+  "version": "0.1.0",
+  "description": "Local-first AI video clipping & content repurposing studio",
+  "author": "Clipwright Studio contributors",
+  "license": "MIT",
+  "private": true,
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "fixtures": "tsx scripts/make-fixtures.ts",
+    "preview:web": "electron-vite build && tsx --tsconfig tsconfig.node.json server/preview.ts",
+    "dist:win": "electron-vite build && electron-builder --win --x64",
+    "dist:dir": "electron-vite build && electron-builder --dir"
+  },
+  "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2",
+    "sql.js": "^1.14.2",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@expo-google-fonts/inter": "^0.4.2",
+    "@types/express": "^5.0.5",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "express": "^5.2.1",
+    "lucide-react": "^1.48.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^5.0.2",
+    "zustand": "^5.0.15"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

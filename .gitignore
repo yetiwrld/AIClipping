@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+dist/
+
+# Runtime workspaces (never commit user data)
+.workspace/
+.test-workspace/
+workspace/
+
+# Generated test media (repeatable via `npm run fixtures`)
+tests/fixtures/media/
+
+# Logs & OS files
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# TS build info
+*.tsbuildinfo
+tests/fixtures/media/
+tests/fixtures/transcript.json
+.workspace/
+
