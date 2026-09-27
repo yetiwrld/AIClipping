@@ -118,3 +118,30 @@ server impersonating an OpenAI-compatible/Anthropic endpoint and generated
 deterministic media fixtures (`npm run fixtures`, gitignored).
 **Consequences**: renders/exports/DB behavior are proven, not simulated;
 provider error mapping is verified without keys or egress; suite runs ~55s.
+
+## ADR-014 — Professional UI redesign: one design system, zero decoration
+**Context**: the MVP UI read as generic "AI SaaS" (purple accent, gradients,
+glow, glass blur, sparkle iconography, score rings, card soup). The redesign
+brief demands professional desktop video-production software: neutral,
+dense, tool-like.
+**Decision**: full rewrite of `global.css` as the single source of truth —
+graphite palette (`#101010`–`#2a2a2a`), ONE muted orange accent `#d9833c`
+(active nav, primary action, progress, selected controls, links), semantic
+success/warn/danger, radii 4/6/8 px, 30 px control height, no gradients, no
+backdrop blur, no glow, no score rings. Legacy CSS variables (`.card`,
+`--bg-*`) are aliased to the new tokens so untouched code keeps rendering.
+Screens rebuilt on top: sidebar shell (identity + nav + settings, 2 px accent
+indicator), dashboard (dense project rows + context menu: open/rename/delete),
+project workspace (tabs + compact stepper), moments (analytical list: CLIP NN,
+timecodes, `86 / 100` audit value, dimension bar rows, why-selected, provider
+honesty), clips (media asset rows), editor (top bar / stage + collapsible
+inspector / ruler timeline with caption strip + transport), queue (grouped
+Rendering/Queued/Completed/Failed), settings (nav + rule-divided sections).
+**Editor correctness**: the preview frame now mirrors `buildRenderPlan`
+exactly — frame sized in JS from the stage + the *selected* aspect-ratio
+target (`ASPECT_RATIOS`), crop math uses the same target, so preview ==
+render for 9:16/4:5/1:1/16:9.
+**Consequences**: no functional changes; all 134 tests, typecheck, build and
+the live E2E smoke (import → transcript → analyze → clip → render) pass; the
+only behavioral additions are dashboard rename/delete affordances calling the
+existing validated IPC methods.

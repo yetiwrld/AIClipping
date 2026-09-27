@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react'
-import { LayoutGrid, ListVideo, Settings as SettingsIcon, Scissors, X } from 'lucide-react'
+import { FolderOpen, ListVideo, Settings as SettingsIcon, X, TriangleAlert } from 'lucide-react'
 import { useAppStore } from './stores/app'
 import { useDataStore } from './stores/data'
 import { subscribeEvents, isPreview, mediaUrl, api } from './api/client'
@@ -71,7 +71,13 @@ export function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
-            <Scissors size={16} />
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              <circle cx="6" cy="6" r="3" />
+              <path d="M8.12 8.12 12 12" />
+              <path d="M20 4 8.12 15.88" />
+              <circle cx="6" cy="18" r="3" />
+              <path d="M14.8 14.8 20 20" />
+            </svg>
           </div>
           <div>
             <div className="brand-name">Clipwright</div>
@@ -79,26 +85,30 @@ export function App() {
           </div>
         </div>
 
+        <div className="nav-group-label">Workspace</div>
         <button className={`nav-item ${view === 'dashboard' ? 'active' : ''}`} onClick={() => navigate('dashboard')}>
-          <LayoutGrid size={16} /> Projects
+          <FolderOpen size={15} strokeWidth={1.75} /> Projects
         </button>
         <button className={`nav-item ${view === 'queue' ? 'active' : ''}`} onClick={() => navigate('queue')}>
-          <ListVideo size={16} /> Render queue
-          {activeRenders > 0 && <span className="nav-badge">{activeRenders}</span>}
+          <ListVideo size={15} strokeWidth={1.75} /> Render queue
+          {activeRenders > 0 && <span className="nav-badge active-count">{activeRenders}</span>}
         </button>
         {interrupted > 0 && (
-          <button className="nav-item" onClick={() => navigate('queue')} title="Interrupted processing detected">
-            <span className="chip warn" style={{ fontSize: 10.5 }}>{interrupted} to recover</span>
+          <button className="nav-item" onClick={() => navigate('queue')} title="Interrupted processing detected — review in the render queue">
+            <TriangleAlert size={15} strokeWidth={1.75} style={{ color: 'var(--warn)' }} /> {interrupted} to recover
           </button>
         )}
-        <button className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => navigate('settings')}>
-          <SettingsIcon size={16} /> Settings
-        </button>
+
+        <div style={{ marginTop: 'auto' }}>
+          <button className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => navigate('settings')} style={{ width: '100%' }}>
+            <SettingsIcon size={15} strokeWidth={1.75} /> Settings
+          </button>
+        </div>
 
         <div className="sidebar-footer">
-          {isPreview && <div style={{ color: 'var(--warn)' }}>Browser preview · full app runs on the desktop</div>}
+          {isPreview && <div style={{ color: 'var(--warn)', marginBottom: 3 }}>Browser preview · full app runs on the desktop</div>}
           <div>v{useAppStore.getState().appInfo?.version ?? '…'}</div>
-          <div style={{ wordBreak: 'break-all' }}>{useAppStore.getState().appInfo?.workspaceRoot}</div>
+          <div>{useAppStore.getState().appInfo?.workspaceRoot}</div>
         </div>
       </aside>
 

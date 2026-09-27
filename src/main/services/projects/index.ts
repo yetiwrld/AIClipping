@@ -193,7 +193,11 @@ export async function importMediaFile(ctx: AppContext, projectId: string, filePa
       ctx.logger.warn('projects', 'import', 'thumbnail generation failed', String(err))
     }
 
-    const updated = projectsRepo.get(ctx.db, projectId) as Project
+    const updated = projectsRepo.get(ctx.db, projectId)
+    if (!updated) {
+      // The project was deleted while the import was running (B-008).
+      throw new AppError('PROJECT_DELETED', 'This project was deleted during import.', 'Nothing was corrupted — the import was discarded.')
+    }
     projectsRepo.writeProjectJson(ctx, updated)
     ctx.events.publish({ type: 'project:update', project: updated })
     ctx.events.publish({ type: 'task:update', task: {
@@ -278,7 +282,11 @@ export async function importMediaUrl(ctx: AppContext, projectId: string, url: st
       /* non-fatal */
     }
 
-    const updated = projectsRepo.get(ctx.db, projectId) as Project
+    const updated = projectsRepo.get(ctx.db, projectId)
+    if (!updated) {
+      // The project was deleted while the download was running (B-008).
+      throw new AppError('PROJECT_DELETED', 'This project was deleted during import.', 'Nothing was corrupted — the import was discarded.')
+    }
     projectsRepo.writeProjectJson(ctx, updated)
     ctx.events.publish({ type: 'project:update', project: updated })
     ctx.logger.info('projects', 'import.url', `id=${projectId} provider=${provider.id}`)

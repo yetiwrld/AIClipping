@@ -1,19 +1,26 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Play, Pause, Volume2, VolumeX, Scissors, Type, Crop, Tags, Save, Rocket, Sparkles, Copy } from 'lucide-react'
+import {
+  ArrowLeft, Play, Pause, Volume2, VolumeX, SkipBack, Type, Crop, Tags, Copy,
+  ChevronRight, Scissors, Wand2, Save
+} from 'lucide-react'
 import { api, errMessage, mediaUrl, copyText } from '../../api/client'
 import { useAppStore } from '../../stores/app'
 import { useDataStore } from '../../stores/data'
 import { ErrorBox, Field, Spinner, Switch } from '../../components/ui'
 import { buildCues, cueAt } from '@shared/captions/segmentation'
 import { computeCrop } from '@shared/video/crop'
-import { CAPTION_STYLES, getCaptionStyle, getDurationRange, getPlatformPreset, PLATFORM_PRESETS } from '@shared/constants'
+import { ASPECT_RATIOS, CAPTION_STYLES, getCaptionStyle, getDurationRange, getPlatformPreset, PLATFORM_PRESETS } from '@shared/constants'
 import type { CaptionOverrides, Clip, TranscriptSegment } from '@shared/types'
 import { formatClock } from '@shared/utils/time'
 import { Timeline } from './Timeline'
 import { CaptionPreview } from './CaptionPreview'
 
-type Panel = 'trim' | 'captions' | 'crop' | 'metadata'
-
+/**
+ * Clip editor — professional workspace layout:
+ * top bar (identity + save + render) / stage + inspector / timeline + transport.
+ * All state, autosave, shortcuts and crop math unchanged from the validated
+ * implementation; only the presentation layer was redesigned.
+ */
 export function EditorPage() {
   const app = useAppStore()
   const data = useDataStore()
@@ -23,7 +30,6 @@ export function EditorPage() {
   const [clip, setClip] = useState<Clip | null>(null)
   const [segments, setSegments] = useState<TranscriptSegment[]>([])
   const [error, setError] = useState<unknown>(null)
-  const [panel, setPanel] = useState<Panel>('trim')
   const [currentTime, setCurrentTime] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [muted, setMuted] = useState(false)
@@ -31,8 +37,8 @@ export function EditorPage() {
   const [renderQueued, setRenderQueued] = useState(false)
 
   const videoRef = useRef<HTMLVideoElement>(null)
-  const previewBoxRef = useRef<HTMLDivElement>(null)
-  const [previewHeight, setPreviewHeight] = useState(420)
+  const stageRef = useRef<HTMLDivElement>(null)
+  const [stageSize, setStageSize] = useState({ w: 0, h: 0 })
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const loadedRef = useRef<string | null>(null)
 
@@ -187,21 +193,27 @@ export function EditorPage() {
     })
   }, [segments, clip, style])
 
+  // Mirror of the render plan: crop toward the selected output target so the
+  // preview shows exactly what FFmpeg produces (plan.ts buildRenderPlan).
+  const target = clip ? (ASPECT_RATIOS[clip.aspectRatio] ?? ASPECT_RATIOS['9:16']) : ASPECT_RATIOS['9:16']
   const crop = useMemo(() => {
     if (!clip || !project?.width || !project?.height) return null
-    return computeCrop(project.width, project.height, 1080, 1920, clip.cropMode, clip.cropX, clip.zoom)
-  }, [clip, project])
+    return computeCrop(project.width, project.height, target.w, target.h, clip.cropMode, clip.cropX, clip.zoom)
+  }, [clip, project, target])
 
-  // Measure the preview box for caption scaling
+  // Measure the stage; the preview frame is sized from it so it always fits
+  // and always honors the output aspect ratio exactly.
   useEffect(() => {
-    const el = previewBoxRef.current
+    const el = stageRef.current
     if (!el) return
     const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) setPreviewHeight(entry.contentRect.height)
+      for (const entry of entries) {
+        setStageSize({ w: entry.contentRect.width, h: entry.contentRect.height })
+      }
     })
     observer.observe(el)
     return () => observer.disconnect()
-  }, [clip])
+  }, [])
 
   // ---------------------------------------------------------------- render ---
   async function queueRender() {
@@ -238,7 +250,7 @@ export function EditorPage() {
   if (!clip || !project) {
     return (
       <div className="page" style={{ display: 'grid', placeItems: 'center' }}>
-        <Spinner size={22} />
+        <Spinner size={20} />
       </div>
     )
   }
@@ -246,47 +258,49 @@ export function EditorPage() {
   const activeCue = cueAt(cues, currentTime)
   const targetRange = getDurationRange(project.settings.durationPreset)
 
+  // Fit the output-ratio frame inside the stage (letterboxed, never distorted).
+  const ratio = target.w / target.h
+  const frame =
+    stageSize.w > 0 && stageSize.h > 0
+      ? (() => {
+          let w = Math.min(stageSize.w, stageSize.h * ratio)
+          return { w, h: w / ratio }
+        })()
+      : { w: 0, h: 0 }
+
   return (
-    <div className="page" style={{ paddingBottom: 30 }}>
-      <div className="page-header">
-        <button className="btn ghost" onClick={() => app.openProject(project.id)} aria-label="Back to project">
-          <ArrowLeft size={16} />
+    <div className="editor-shell">
+      {/* ------------------------------------------------------- top bar -- */}
+      <div className="editor-topbar">
+        <button className="btn ghost icon" onClick={() => app.openProject(project.id)} aria-label="Back to project">
+          <ArrowLeft size={15} />
         </button>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <input
-            className="input"
-            style={{ fontWeight: 650, fontSize: 15, background: 'transparent', border: '1px solid transparent', padding: '4px 8px' }}
-            value={clip.title}
-            placeholder="Clip title"
-            onChange={(e) => updateClip({ title: e.target.value })}
-          />
-          <div className="tiny" style={{ padding: '0 8px' }}>
-            <Save size={10} style={{ verticalAlign: -1 }} /> {saveState === 'saved' ? 'All changes saved' : saveState === 'saving' ? 'Saving…' : 'Unsaved changes'}
-            <span style={{ margin: '0 7px', opacity: 0.5 }}>|</span>
-            shortcuts: <span className="kbd">space</span> play <span className="kbd">I</span>/<span className="kbd">O</span> trim <span className="kbd">←</span>/<span className="kbd">→</span> seek
-          </div>
-        </div>
-        <button className="btn primary lg" onClick={() => void queueRender()} disabled={renderQueued}>
-          {renderQueued ? <Spinner size={14} /> : <Rocket size={15} />} Render clip
+        <input
+          className="clip-title-input"
+          value={clip.title}
+          placeholder="Clip title"
+          onChange={(e) => updateClip({ title: e.target.value })}
+        />
+        <span className={`save-state ${saveState === 'dirty' ? 'dirty' : ''}`}>
+          {saveState === 'saving' && <Spinner size={11} />}
+          {saveState === 'saved' ? 'Saved' : saveState === 'saving' ? 'Saving…' : 'Unsaved changes'}
+        </span>
+        <span style={{ flex: 1 }} />
+        <span className="tiny" style={{ marginRight: 6 }}>
+          <span className="kbd">space</span> play · <span className="kbd">I</span>/<span className="kbd">O</span> trim · <span className="kbd">←</span>/<span className="kbd">→</span> seek
+        </span>
+        <button className="btn primary" onClick={() => void queueRender()} disabled={renderQueued}>
+          {renderQueued ? <Spinner size={12} /> : <Play size={13} />} Render clip
         </button>
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: 'minmax(300px, 460px) minmax(340px, 1fr)', alignItems: 'start', gap: 22 }}>
-        {/* ------------------------------------------------------ preview -- */}
-        <div className="stack">
+      {/* ---------------------------------------------------- stage + insp -- */}
+      <div className="editor-body">
+        <div className="editor-stage" ref={stageRef}>
           <div
-            ref={previewBoxRef}
-            style={{
-              position: 'relative',
-              width: '100%',
-              aspectRatio: '9/16',
-              maxHeight: '62vh',
-              margin: '0 auto',
-              borderRadius: 12,
-              overflow: 'hidden',
-              background: '#000',
-              border: '1px solid var(--border-2)'
-            }}
+            className="editor-frame"
+            style={{ width: frame.w || undefined, height: frame.h || undefined }}
+            title={`Preview frame: ${target.w}×${target.h} (${clip.aspectRatio})`}
           >
             <video
               ref={videoRef}
@@ -302,7 +316,7 @@ export function EditorPage() {
                       top: `${-(crop.y / crop.h) * 100}%`,
                       objectFit: 'fill'
                     }
-                  : { width: '100%', height: '100%' }
+                  : { width: '100%', height: '100%', objectFit: 'contain' }
               }
               preload="metadata"
               playsInline
@@ -316,63 +330,91 @@ export function EditorPage() {
                 emphasis={clip.captionOverrides.emphasis}
                 uppercase={clip.captionOverrides.uppercase}
                 currentTime={currentTime}
-                containerHeight={previewHeight}
+                containerHeight={frame.h}
               />
             )}
-            <div className="tiny" style={{ position: 'absolute', top: 8, left: 10, background: 'rgba(5,7,10,0.65)', borderRadius: 6, padding: '2px 8px', pointerEvents: 'none' }}>
-              {formatClock(currentTime, true)} / {formatClock(clip.endTime, true)}
+            <div className="mono" style={{ position: 'absolute', top: 8, left: 10, background: 'rgba(0,0,0,0.55)', borderRadius: 3, padding: '2px 7px', pointerEvents: 'none', fontSize: 11 }}>
+              {formatClock(currentTime, true)}
             </div>
           </div>
-
-          <div className="row" style={{ justifyContent: 'center', gap: 12 }}>
-            <button className="btn" onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>
-              {playing ? <Pause size={16} /> : <Play size={16} />}
-            </button>
-            <button className="btn ghost" onClick={() => setMuted(!muted)} aria-label={muted ? 'Unmute' : 'Mute'}>
-              {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-            </button>
-            <button className="btn sm" onClick={() => { if (videoRef.current) { videoRef.current.currentTime = clip.startTime; setCurrentTime(clip.startTime) } }}>
-              ⟲ start
-            </button>
-            <span className="tiny">{cues.length} caption cues</span>
-          </div>
-
-          <Timeline
-            duration={project.duration ?? 1}
-            startTime={clip.startTime}
-            endTime={clip.endTime}
-            currentTime={currentTime}
-            onSeek={(t) => {
-              if (videoRef.current) videoRef.current.currentTime = t
-              setCurrentTime(t)
-            }}
-            onChangeRange={(start, end) => updateClip({ startTime: start, endTime: end })}
-            targetRange={{ min: targetRange.min, max: targetRange.max }}
-          />
         </div>
 
-        {/* -------------------------------------------------------- panel -- */}
-        <div className="stack">
-          <div className="tabs">
-            <button className={`tab ${panel === 'trim' ? 'active' : ''}`} onClick={() => setPanel('trim')}>
-              <Scissors size={14} /> Trim
-            </button>
-            <button className={`tab ${panel === 'captions' ? 'active' : ''}`} onClick={() => setPanel('captions')}>
-              <Type size={14} /> Captions
-            </button>
-            <button className={`tab ${panel === 'crop' ? 'active' : ''}`} onClick={() => setPanel('crop')}>
-              <Crop size={14} /> Crop
-            </button>
-            <button className={`tab ${panel === 'metadata' ? 'active' : ''}`} onClick={() => setPanel('metadata')}>
-              <Tags size={14} /> Metadata
-            </button>
-          </div>
+        <div className="editor-inspector">
+          <details className="inspector-section" open>
+            <summary>
+              <Scissors size={12} /> Trim <ChevronRight size={13} className="chev" />
+            </summary>
+            <div className="inspector-body">
+              <TrimPanel clip={clip} currentTime={currentTime} updateClip={updateClip} cues={cues} onSeek={(t) => { if (videoRef.current) videoRef.current.currentTime = t; setCurrentTime(t) }} />
+            </div>
+          </details>
 
-          {panel === 'trim' && <TrimPanel clip={clip} currentTime={currentTime} updateClip={updateClip} cues={cues} onSeek={(t) => { if (videoRef.current) videoRef.current.currentTime = t; setCurrentTime(t) }} />}
-          {panel === 'captions' && <CaptionsPanel clip={clip} cues={cues} updateClip={updateClip} />}
-          {panel === 'crop' && <CropPanel clip={clip} updateClip={updateClip} />}
-          {panel === 'metadata' && <MetadataPanel clip={clip} updateClip={updateClip} />}
+          <details className="inspector-section" open>
+            <summary>
+              <Type size={12} /> Captions <ChevronRight size={13} className="chev" />
+            </summary>
+            <div className="inspector-body">
+              <CaptionsPanel clip={clip} cues={cues} updateClip={updateClip} />
+            </div>
+          </details>
+
+          <details className="inspector-section">
+            <summary>
+              <Crop size={12} /> Crop &amp; framing <ChevronRight size={13} className="chev" />
+            </summary>
+            <div className="inspector-body">
+              <CropPanel clip={clip} updateClip={updateClip} />
+            </div>
+          </details>
+
+          <details className="inspector-section">
+            <summary>
+              <Tags size={12} /> Metadata <ChevronRight size={13} className="chev" />
+            </summary>
+            <div className="inspector-body">
+              <MetadataPanel clip={clip} updateClip={updateClip} />
+            </div>
+          </details>
         </div>
+      </div>
+
+      {/* -------------------------------------------------- timeline + tp -- */}
+      <div className="editor-bottom">
+        <div className="transport">
+          <button className="btn sm icon" onClick={togglePlay} aria-label={playing ? 'Pause' : 'Play'}>
+            {playing ? <Pause size={14} /> : <Play size={14} />}
+          </button>
+          <button
+            className="btn ghost sm icon"
+            onClick={() => { if (videoRef.current) { videoRef.current.currentTime = clip.startTime; setCurrentTime(clip.startTime) } }}
+            aria-label="Return to clip start"
+            title="Go to clip start"
+          >
+            <SkipBack size={13} />
+          </button>
+          <button className="btn ghost sm icon" onClick={() => setMuted(!muted)} aria-label={muted ? 'Unmute' : 'Mute'}>
+            {muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+          </button>
+          <span className="timecode">
+            {formatClock(currentTime, true)} <span className="total">/ {formatClock(project.duration ?? 0, true)}</span>
+          </span>
+          <span style={{ flex: 1 }} />
+          <span className="tiny">{cues.length} caption cues{activeCue ? ` · “${activeCue.text.slice(0, 40)}${activeCue.text.length > 40 ? '…' : ''}”` : ''}</span>
+        </div>
+
+        <Timeline
+          duration={project.duration ?? 1}
+          startTime={clip.startTime}
+          endTime={clip.endTime}
+          currentTime={currentTime}
+          onSeek={(t) => {
+            if (videoRef.current) videoRef.current.currentTime = t
+            setCurrentTime(t)
+          }}
+          onChangeRange={(start, end) => updateClip({ startTime: start, endTime: end })}
+          targetRange={{ min: targetRange.min, max: targetRange.max }}
+          cues={cues}
+        />
       </div>
     </div>
   )
@@ -396,11 +438,11 @@ function TrimPanel(props: {
     }
   }
   return (
-    <div className="card stack">
+    <>
       <div className="row">
         <div className="field" style={{ flex: 1 }}>
           <label className="field-label">Start (set with <span className="kbd">I</span>)</label>
-          <div className="row">
+          <div className="row" style={{ gap: 4 }}>
             <button className="btn sm" onClick={() => nudge('startTime', -0.5)} aria-label="Nudge start earlier">−0.5s</button>
             <input
               className="input"
@@ -413,14 +455,14 @@ function TrimPanel(props: {
           </div>
         </div>
         <button className="btn sm" style={{ alignSelf: 'flex-end' }} onClick={() => props.updateClip({ startTime: Math.min(currentTime, clip.endTime - 0.5) }, true)}>
-          Set start at playhead
+          Set at playhead
         </button>
       </div>
 
       <div className="row">
         <div className="field" style={{ flex: 1 }}>
           <label className="field-label">End (set with <span className="kbd">O</span>)</label>
-          <div className="row">
+          <div className="row" style={{ gap: 4 }}>
             <button className="btn sm" onClick={() => nudge('endTime', -0.5)} aria-label="Nudge end earlier">−0.5s</button>
             <input
               className="input"
@@ -433,18 +475,18 @@ function TrimPanel(props: {
           </div>
         </div>
         <button className="btn sm" style={{ alignSelf: 'flex-end' }} onClick={() => props.updateClip({ endTime: Math.max(currentTime, clip.startTime + 0.5) }, true)}>
-          Set end at playhead
+          Set at playhead
         </button>
       </div>
 
       <div className="divider" />
-      <div className="card-title" style={{ marginBottom: 8 }}>Captions in range (click to seek & edit)</div>
-      <div style={{ maxHeight: 240, overflowY: 'auto' }} className="stack sm">
+      <div className="section-title" style={{ marginBottom: 8 }}>Captions in range <span style={{ color: 'var(--text-3)', textTransform: 'none', letterSpacing: 0 }}>(click to seek)</span></div>
+      <div style={{ maxHeight: 220, overflowY: 'auto' }} className="stack sm">
         {props.cues.map((cue) => (
           <button
             key={cue.key}
             className="btn ghost"
-            style={{ justifyContent: 'flex-start', textAlign: 'left', fontSize: 12.5, padding: '5px 8px' }}
+            style={{ justifyContent: 'flex-start', textAlign: 'left', fontSize: 12, padding: '4px 8px', height: 'auto' }}
             onClick={() => props.onSeek(cue.startTime + 0.05)}
             title="Seek to this caption"
           >
@@ -456,7 +498,7 @@ function TrimPanel(props: {
         ))}
         {props.cues.length === 0 && <div className="tiny">No captions in this range — the transcript may not cover it.</div>}
       </div>
-    </div>
+    </>
   )
 }
 
@@ -476,23 +518,22 @@ function CaptionsPanel(props: {
   }
 
   return (
-    <div className="card stack">
-      <div className="card-title">Caption style</div>
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(96px, 1fr))', gap: 8 }}>
+    <>
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(88px, 1fr))', gap: 6 }}>
         {[...CAPTION_STYLES, { id: 'none', label: 'Off' } as { id: string; label: string }].map((s) => (
           <button
             key={s.id}
             className={`btn sm ${clip.captionStyleId === s.id ? 'primary' : ''}`}
-            style={{ flexDirection: 'column', padding: '10px 4px', height: 62 }}
+            style={{ flexDirection: 'column', padding: '8px 4px', height: 52, gap: 3 }}
             onClick={() => props.updateClip({ captionStyleId: s.id })}
             title={s.id === 'none' ? 'Render without captions' : getCaptionStyle(s.id).description}
           >
-            <Type size={13} style={{ marginBottom: 4 }} />
+            <Type size={12} />
             {s.label}
           </button>
         ))}
       </div>
-      <div className="field-hint" style={{ marginTop: -4 }}>{style.description}</div>
+      <div className="field-hint">{style.description}</div>
 
       {clip.captionStyleId !== 'none' && (
         <>
@@ -539,14 +580,14 @@ function CaptionsPanel(props: {
           />
 
           <div className="divider" />
-          <div className="card-title">Caption text</div>
-          <div className="field-hint" style={{ marginTop: -6, marginBottom: 6 }}>
+          <div className="section-title">Caption text</div>
+          <div className="field-hint">
             Fix transcription errors per caption. Edits apply to preview and render; timing is unaffected.
           </div>
-          <div className="stack sm" style={{ maxHeight: 260, overflowY: 'auto' }}>
+          <div className="stack sm" style={{ maxHeight: 240, overflowY: 'auto' }}>
             {props.cues.slice(0, 40).map((cue) => (
               <div key={cue.key} className="field">
-                <label className="field-label mono" style={{ fontSize: 10.5 }}>{formatClock(cue.startTime, true)}</label>
+                <label className="field-label mono" style={{ fontSize: 10 }}>{formatClock(cue.startTime, true)}</label>
                 <input
                   className="input"
                   defaultValue={clip.captionTextEdits[cue.key] ?? cue.words.map((w) => w.text).join(' ')}
@@ -564,7 +605,7 @@ function CaptionsPanel(props: {
           </div>
         </>
       )}
-    </div>
+    </>
   )
 }
 
@@ -573,10 +614,8 @@ function CaptionsPanel(props: {
 function CropPanel(props: { clip: Clip; updateClip: (patch: Partial<Clip>, immediate?: boolean) => void }) {
   const { clip } = props
   return (
-    <div className="card stack">
-      <div className="card-title">Reframe — 9:16 vertical</div>
-      <div className="field">
-        <label className="field-label">Crop mode</label>
+    <>
+      <Field label="Crop mode">
         <select className="select" value={clip.cropMode} onChange={(e) => props.updateClip({ cropMode: e.target.value as Clip['cropMode'] })}>
           <option value="center">Center crop — safe default</option>
           <option value="top">Top-biased crop (taller sources)</option>
@@ -587,7 +626,7 @@ function CropPanel(props: { clip: Clip; updateClip: (patch: Partial<Clip>, immed
           Face-aware and speaker-tracking crops are planned but not yet available — the preview shows exactly what the renderer
           produces, so you can frame the subject manually.
         </div>
-      </div>
+      </Field>
 
       {clip.cropMode === 'manual' && (
         <>
@@ -624,7 +663,7 @@ function CropPanel(props: { clip: Clip; updateClip: (patch: Partial<Clip>, immed
           <option value="16:9">16:9 · 1920×1080 (keep horizontal)</option>
         </select>
       </Field>
-    </div>
+    </>
   )
 }
 
@@ -661,20 +700,19 @@ function MetadataPanel(props: { clip: Clip; updateClip: (patch: Partial<Clip>, i
   }
 
   return (
-    <div className="card stack">
+    <>
       <div className="row">
-        <div className="card-title" style={{ marginBottom: 0 }}>Description & packaging</div>
+        <span className="tiny">
+          Target: <strong style={{ color: 'var(--text-2)' }}>{preset.label}</strong> — title ≤ {preset.maxTitleLength} chars, {preset.hashtagCount} hashtags
+          {clip.metadataProvider && ` · last generated by ${clip.metadataProvider}`}
+        </span>
         <span style={{ flex: 1 }} />
         <button className="btn sm" onClick={() => void copyAll()}>
-          <Copy size={13} /> Copy all
+          <Copy size={12} /> Copy all
         </button>
         <button className="btn primary sm" onClick={() => void generate()} disabled={generating}>
-          {generating ? <Spinner size={12} /> : <Sparkles size={13} />} Generate
+          {generating ? <Spinner size={11} /> : <Wand2 size={12} />} Generate
         </button>
-      </div>
-      <div className="field-hint">
-        Target preset: <strong>{preset.label}</strong> — title ≤ {preset.maxTitleLength} chars, {preset.hashtagCount} hashtags.
-        {clip.metadataProvider && ` Last generated by ${clip.metadataProvider}.`}
       </div>
 
       <Field label="Title">
@@ -704,6 +742,6 @@ function MetadataPanel(props: { clip: Clip; updateClip: (patch: Partial<Clip>, i
           ))}
         </select>
       </Field>
-    </div>
+    </>
   )
 }

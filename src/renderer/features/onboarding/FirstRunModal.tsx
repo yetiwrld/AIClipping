@@ -62,7 +62,7 @@ export function FirstRunModal() {
             <>
               {deps.map((d) => (
                 <div className="dep-row" key={d.id}>
-                  <span style={{ color: d.available ? 'var(--success)' : 'var(--danger)' }}>{d.available ? '✓' : '✕'}</span>
+                  <span className={`status ${d.available ? 'success' : 'danger'}`}><span className="dot" /></span>
                   <span className="dep-name">{d.label}</span>
                   <span className="dep-msg">{d.message}</span>
                 </div>

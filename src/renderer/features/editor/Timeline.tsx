@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatClock } from '@shared/utils/time'
+import type { CaptionCue } from '@shared/captions/segmentation'
 
 /**
- * Timeline: source duration, clip range, draggable in/out handles,
- * playhead. Dragging updates the clip range in real time (spec §25).
+ * Timeline: ruler with time labels, source track with clip range, draggable
+ * in/out handles, playhead, and a caption-timing strip (spec §25).
+ * Dragging updates the clip range in real time.
  */
 export function Timeline(props: {
   duration: number
@@ -13,6 +15,7 @@ export function Timeline(props: {
   onSeek: (t: number) => void
   onChangeRange: (start: number, end: number) => void
   targetRange?: { min: number; max: number } | null
+  cues?: CaptionCue[]
 }) {
   const trackRef = useRef<HTMLDivElement>(null)
   const [dragging, setDragging] = useState<'start' | 'end' | 'playhead' | null>(null)
@@ -50,21 +53,36 @@ export function Timeline(props: {
     }
   }, [dragging, timeAt, props])
 
-  const ticks = buildTicks(props.duration)
+  const { majors, minors } = buildTicks(props.duration)
+  const activeCue = useMemo(
+    () => (props.cues ? props.cues.find((c) => props.currentTime >= c.startTime && props.currentTime <= c.endTime) : undefined),
+    [props.cues, props.currentTime]
+  )
+  const inTarget = props.targetRange
+    ? props.endTime - props.startTime >= props.targetRange.min * 0.65 && props.endTime - props.startTime <= props.targetRange.max * 1.35
+    : true
 
   return (
-    <div className="timeline" style={{ userSelect: 'none' }}>
-      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
-        <span className="tiny">{formatClock(props.currentTime, true)}</span>
+    <div className="timeline">
+      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 5 }}>
         <span className="tiny">
-          clip {formatClock(props.startTime)} → {formatClock(props.endTime)} · {(props.endTime - props.startTime).toFixed(1)}s
+          clip <span className="mono" style={{ color: 'var(--text-2)' }}>{formatClock(props.startTime)} → {formatClock(props.endTime)}</span>
+          <span style={{ color: 'var(--text-2)' }}> · {(props.endTime - props.startTime).toFixed(1)}s</span>
           {props.targetRange && (
-            <span style={{ marginLeft: 6, color: inTarget(props.endTime - props.startTime, props.targetRange) ? 'var(--success)' : 'var(--warn)' }}>
+            <span style={{ marginLeft: 8, color: inTarget ? 'var(--success)' : 'var(--warn)' }}>
               target {props.targetRange.min}–{props.targetRange.max}s
             </span>
           )}
         </span>
-        <span className="tiny">{formatClock(props.duration)}</span>
+        <span className="tiny mono">source {formatClock(props.duration)}</span>
+      </div>
+
+      <div className="timeline-ruler">
+        {majors.map((t) => (
+          <span key={t} className="ruler-label" style={{ left: `${pct(t)}%` }}>
+            {formatClock(t)}
+          </span>
+        ))}
       </div>
 
       <div
@@ -76,8 +94,11 @@ export function Timeline(props: {
           setDragging('playhead')
         }}
       >
-        {ticks.map((t) => (
-          <div key={t} className="timeline-tick" style={{ left: `${pct(t)}%` }} />
+        {minors.map((t) => (
+          <div key={`m${t}`} className="timeline-tick" style={{ left: `${pct(t)}%` }} />
+        ))}
+        {majors.map((t) => (
+          <div key={`M${t}`} className="timeline-tick major" style={{ left: `${pct(t)}%` }} />
         ))}
 
         <div className="timeline-range" style={{ left: `${pct(props.startTime)}%`, width: `${pct(props.endTime) - pct(props.startTime)}%` }} />
@@ -124,20 +145,36 @@ export function Timeline(props: {
 
         <div className="timeline-playhead" style={{ left: `${pct(props.currentTime)}%` }} />
       </div>
+
+      {props.cues && (
+        <div className="timeline-captions" aria-hidden>
+          {props.cues.map((cue) => (
+            <div
+              key={cue.key}
+              className={`timeline-caption ${activeCue?.key === cue.key ? 'active' : ''}`}
+              style={{ left: `${pct(cue.startTime)}%`, width: `${Math.max(0.4, pct(cue.endTime) - pct(cue.startTime))}%` }}
+              title={`${formatClock(cue.startTime)} — ${cue.text}`}
+            >
+              {cue.text}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
 
-function inTarget(dur: number, target: { min: number; max: number }): boolean {
-  return dur >= target.min * 0.65 && dur <= target.max * 1.35
-}
-
-function buildTicks(duration: number): number[] {
-  const targetCount = 10
+function buildTicks(duration: number): { majors: number[]; minors: number[] } {
+  const targetCount = 8
   const rawStep = duration / targetCount
-  const niceSteps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800]
+  const niceSteps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
   const step = niceSteps.find((s) => s >= rawStep) ?? 3600
-  const ticks: number[] = []
-  for (let t = 0; t <= duration; t += step) ticks.push(t)
-  return ticks
+  const majors: number[] = []
+  for (let t = 0; t <= duration; t += step) majors.push(t)
+  const minorStep = step / 4
+  const minors: number[] = []
+  for (let t = 0; t <= duration; t += minorStep) {
+    if (!majors.some((m) => Math.abs(m - t) < minorStep * 0.25)) minors.push(t)
+  }
+  return { majors, minors }
 }

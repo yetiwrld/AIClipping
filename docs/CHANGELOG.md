@@ -3,6 +3,41 @@
 All notable changes to Clipwright Studio. Format loosely follows
 Keep a Changelog; versioning follows the app package version.
 
+## Unreleased — professional UI redesign
+
+### Changed
+- Complete visual redesign per the professional-UI brief: neutral graphite
+  design system with a single muted-orange accent, 4/6/8 px radii, flat
+  panels and dividers instead of card stacks, no gradients/glow/blur/sparkle
+  iconography, Lucide icons at standardized 1.75 stroke.
+- Dashboard: dense project rows (thumbnail, duration, clip/moment counts,
+  edited-when, status dot) with a context menu (open / rename / delete with
+  confirmation) and inline active-task lines; no hero, no KPI cards.
+- Moments: analytical list — CLIP NN index, mono timecodes, compact
+  `NN / 100` performance-audit value, per-dimension bar rows, why-selected
+  explanation, heuristic-vs-AI provider labeling; variations as a segmented
+  control.
+- Clips: media-asset rows with thumbnail, timecodes, caption style, status,
+  live render progress, per-row Edit/Render/Export/Reveal/Copy/Delete.
+- Editor: real workspace — top bar (inline title, save state, Render), stage
+  with aspect-correct preview that mirrors the render plan, collapsible
+  inspector sections (Trim / Captions / Crop / Metadata), professional
+  timeline (labeled ruler, trim handles, playhead, caption-timing strip) and
+  a compact transport with timecode.
+- Render queue: grouped Rendering / Queued / Completed / Failed task monitor
+  with live progress, retry, cancel, reveal; recent-operations table.
+- Settings: left nav + rule-divided sections, aligned controls, status dots
+  instead of text glyphs.
+- Sidebar: identity block, workspace nav with live render count, settings at
+  the bottom, 2 px accent indicator on the active item.
+
+### Fixed
+- B-008: deleting a project while its import task was running crashed the
+  backend; background task failures can no longer kill the process, and the
+  import fails with a structured `PROJECT_DELETED` error instead.
+- Test fixtures: `transcript.json` segment text was regenerated (an older
+  generation pass had written "undefined …" text fields).
+
 ## 0.1.0 — MVP (2026-09-27)
 
 ### Added

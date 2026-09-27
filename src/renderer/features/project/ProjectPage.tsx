@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { ArrowLeft, Film, FileText, Sparkles, Scissors, ListVideo, Settings2, RefreshCw } from 'lucide-react'
+import { ArrowLeft, Film, FileText, BarChart3, Scissors, ListVideo, RefreshCw, Check } from 'lucide-react'
 import { api, errMessage, isElectron } from '../../api/client'
 import { useAppStore } from '../../stores/app'
 import { useDataStore } from '../../stores/data'
@@ -100,7 +100,7 @@ export function ProjectPage() {
       <div className="tabs">
         <TabButton tab={tab} setTab={setTab} id="source" icon={<Film size={14} />} label="Source" />
         <TabButton tab={tab} setTab={setTab} id="transcript" icon={<FileText size={14} />} label="Transcript" count={data.transcript.length || undefined} />
-        <TabButton tab={tab} setTab={setTab} id="moments" icon={<Sparkles size={14} />} label="Moments" count={data.candidates.length || undefined} />
+        <TabButton tab={tab} setTab={setTab} id="moments" icon={<BarChart3 size={14} strokeWidth={1.75} />} label="Moments" count={data.candidates.length || undefined} />
         <TabButton tab={tab} setTab={setTab} id="clips" icon={<Scissors size={14} />} label="Clips" count={data.clips.length || undefined} />
         <TabButton tab={tab} setTab={setTab} id="renders" icon={<ListVideo size={14} />} label="Renders" count={data.renders.length || undefined} />
       </div>
@@ -155,12 +155,18 @@ function Pipeline({ status }: { status: string }) {
   }
   return (
     <div className="pipeline" aria-label="Project pipeline">
-      {steps.map((s, i) => (
-        <React.Fragment key={s.id}>
-          {i > 0 && <span className="pipeline-arrow">→</span>}
-          <span className={`pipeline-step ${stateOf(s.id)}`}>{s.label}</span>
-        </React.Fragment>
-      ))}
+      {steps.map((s, i) => {
+        const state = stateOf(s.id)
+        return (
+          <React.Fragment key={s.id}>
+            {i > 0 && <span className="pipeline-arrow">›</span>}
+            <span className={`pipeline-step ${state}`}>
+              {state === 'done' ? <Check size={10} strokeWidth={2.5} className="p-check" /> : <span className="p-dot" />}
+              {s.label}
+            </span>
+          </React.Fragment>
+        )
+      })}
     </div>
   )
 }

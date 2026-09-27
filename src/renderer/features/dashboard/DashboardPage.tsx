@@ -1,11 +1,12 @@
-import React, { useMemo, useState } from 'react'
-import { Film, Plus, Link2, Clock, HardDrive, ChevronRight, ListChecks, Scissors } from 'lucide-react'
+import React, { useMemo, useRef, useState } from 'react'
+import { Film, Plus, Link2, Clock, MoreHorizontal, FolderOpen, Pencil, Trash2, Clapperboard } from 'lucide-react'
 import { api, isElectron, mediaUrl, errMessage } from '../../api/client'
 import { pickUpload } from '../../api/upload'
 import { useAppStore } from '../../stores/app'
 import { useDataStore } from '../../stores/data'
-import { EmptyState, formatBytes, ProgressBar } from '../../components/ui'
+import { EmptyState, Modal, formatRelative } from '../../components/ui'
 import { formatClock } from '@shared/utils/time'
+import type { ProjectSummary } from '@shared/types'
 
 export function DashboardPage() {
   const app = useAppStore()
@@ -72,7 +73,6 @@ export function DashboardPage() {
     }
   }
 
-
   async function handleImportUrl() {
     if (!url.trim()) return
     setImporting('url')
@@ -93,93 +93,72 @@ export function DashboardPage() {
 
   return (
     <div className="page">
-      <div className="page-header">
-        <div>
-          <div className="page-title">Projects</div>
-          <div className="page-subtitle">
-            Long video in · short clips out. Everything stays on this machine unless you configure an AI provider.
-          </div>
-        </div>
-        <div className="header-spacer" />
-        <button className="btn" onClick={() => handleImportFile()} disabled={importing !== null}>
-          <Film size={15} /> {importing === 'file' ? 'Importing…' : 'Import video'}
+      <div className="toolbar">
+        <input
+          id="new-project-name"
+          className="input"
+          style={{ flex: 1, minWidth: 220, maxWidth: 420 }}
+          placeholder="New project name — e.g. “Episode 42 — Founder Interview”"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && void handleCreate()}
+        />
+        <button className="btn primary" onClick={() => void handleCreate()} disabled={creating || !name.trim()}>
+          <Plus size={14} /> Create project
         </button>
-        <button className="btn primary" onClick={() => document.getElementById('new-project-name')?.focus()}>
-          <Plus size={15} /> New project
+        <span style={{ flex: 1 }} />
+        <button className="btn" onClick={() => void handleImportFile()} disabled={importing !== null}>
+          <Film size={14} /> {importing === 'file' ? 'Importing…' : 'Import video'}
         </button>
       </div>
 
-      <div className="card" style={{ marginBottom: 20 }}>
-        <div className="row wrap">
-          <input
-            id="new-project-name"
-            className="input"
-            style={{ flex: 1, minWidth: 220 }}
-            placeholder="Name your project — e.g. “Episode 42 — Founder Interview”"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && void handleCreate()}
-          />
-          <button className="btn primary" onClick={() => void handleCreate()} disabled={creating || !name.trim()}>
-            Create project
-          </button>
-        </div>
-        <div className="divider" />
-        <div className="row wrap">
-          <Link2 size={15} className="muted" />
-          <input
-            className="input"
-            style={{ flex: 1, minWidth: 220 }}
-            placeholder="…or paste a direct media URL (.mp4/.webm) you are authorized to use"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && void handleImportUrl()}
-          />
-          <button className="btn" onClick={() => void handleImportUrl()} disabled={importing !== null || !url.trim()}>
-            {importing === 'url' ? 'Starting…' : 'Import from URL'}
-          </button>
-        </div>
-        <div className="tiny" style={{ marginTop: 8 }}>
-          URL import supports direct media links. Sites that need extraction require yt-dlp installed on your system — the app
-          never installs tools by itself.
-        </div>
+      <div className="row wrap" style={{ gap: 8, padding: '10px 8px 14px', borderBottom: '1px solid var(--border-strong)' }}>
+        <Link2 size={13} className="muted" />
+        <input
+          className="input"
+          style={{ flex: 1, minWidth: 220, maxWidth: 420 }}
+          placeholder="…or paste a direct media URL (.mp4/.webm) you are authorized to use"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && void handleImportUrl()}
+        />
+        <button className="btn" onClick={() => void handleImportUrl()} disabled={importing !== null || !url.trim()}>
+          {importing === 'url' ? 'Starting…' : 'Import from URL'}
+        </button>
+        <span className="tiny" style={{ flex: 1, minWidth: 200 }}>
+          Direct media links only. Sites that need extraction require yt-dlp on your system — the app never installs tools itself.
+        </span>
       </div>
 
       {activeTasks.length > 0 && (
-        <div className="card pad-sm" style={{ marginBottom: 20 }}>
-          <div className="row" style={{ marginBottom: 8 }}>
-            <ListChecks size={15} className="muted" />
-            <strong style={{ fontSize: 13 }}>Processing now</strong>
-          </div>
+        <div className="section">
           {activeTasks.slice(0, 4).map((t) => (
-            <div key={t.id} style={{ padding: '6px 0' }}>
-              <div className="row" style={{ justifyContent: 'space-between', marginBottom: 4 }}>
-                <span style={{ fontSize: 12.5 }}>{t.message ?? `${t.type}…`}</span>
-                <span className="tiny">{t.stage ?? t.state}</span>
-              </div>
-              {t.progress != null && <ProgressBar value={t.progress} />}
+            <div key={t.id} className="row" style={{ padding: '2px 8px', fontSize: 12.5 }}>
+              <span className="status working">
+                <span className="dot" /> {t.message ?? `${t.type}…`}
+              </span>
+              <span className="tiny">{t.stage ?? ''}</span>
             </div>
           ))}
         </div>
       )}
 
       {sorted.length === 0 ? (
-        <div className="card">
-          <EmptyState
-            icon={<Scissors size={40} />}
-            title="No projects yet"
-            hint="Create a project and import a long-form video — a podcast, interview, lecture or stream. Clipwright will transcribe it, find the strong moments, and help you turn them into vertical clips."
-            action={
-              <button className="btn primary lg" onClick={() => document.getElementById('new-project-name')?.focus()}>
-                <Plus size={16} /> Create your first project
-              </button>
-            }
-          />
+        <div className="empty" style={{ padding: '80px 20px' }}>
+          <Clapperboard size={28} className="empty-icon" />
+          <div style={{ fontWeight: 600, fontSize: 13.5 }}>No projects yet</div>
+          <div className="muted" style={{ maxWidth: 400, fontSize: 12.5, lineHeight: 1.55 }}>
+            Create a project and import a long-form video — a podcast, interview, lecture or stream. Clipwright transcribes it,
+            finds the strong moments, and helps you turn them into vertical clips.
+          </div>
+          <button className="btn primary" style={{ marginTop: 6 }} onClick={() => document.getElementById('new-project-name')?.focus()}>
+            <Plus size={14} /> New project
+          </button>
         </div>
       ) : (
-        <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))' }}>
+        <div className="project-list">
           {sorted.map((p) => (
-            <ProjectCard key={p.id} summary={p} />
+            <ProjectRow key={p.id} summary={p} />
           ))}
         </div>
       )}
@@ -187,54 +166,175 @@ export function DashboardPage() {
   )
 }
 
-function ProjectCard({ summary }: { summary: import('@shared/types').ProjectSummary }) {
+function ProjectRow({ summary }: { summary: ProjectSummary }) {
   const app = useAppStore()
+  const data = useDataStore()
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [renameValue, setRenameValue] = useState(summary.name)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  async function doRename() {
+    const next = renameValue.trim()
+    setRenaming(false)
+    if (!next || next === summary.name) return
+    try {
+      await api['projects.rename']({ id: summary.id, name: next })
+      await data.refreshProjects()
+      if (data.activeProject?.id === summary.id) await data.loadProject(summary.id)
+    } catch (err) {
+      app.toast({ level: 'error', ...errMessage(err) })
+    }
+  }
+
+  async function doDelete() {
+    setConfirmDelete(false)
+    try {
+      await api['projects.delete']({ id: summary.id, confirm: true })
+      await data.refreshProjects()
+      app.toast({ level: 'info', message: `Project “${summary.name}” deleted.` })
+      if (app.projectId === summary.id) app.navigate('dashboard')
+    } catch (err) {
+      app.toast({ level: 'error', ...errMessage(err) })
+    }
+  }
+
   return (
-    <button className="card" style={{ textAlign: 'left', cursor: 'pointer', padding: 0, overflow: 'hidden' }} onClick={() => app.openProject(summary.id)}>
-      <div style={{ position: 'relative', background: 'var(--bg-2)', aspectRatio: '16/9', display: 'grid', placeItems: 'center' }}>
+    <div
+      className="project-row"
+      role="button"
+      tabIndex={0}
+      onClick={() => !renaming && app.openProject(summary.id)}
+      onKeyDown={(e) => {
+        if ((e.key === 'Enter' || e.key === ' ') && !renaming && e.target === e.currentTarget) {
+          e.preventDefault()
+          app.openProject(summary.id)
+        }
+      }}
+    >
+      <div className="project-thumb">
         {summary.thumbnail ? (
-          <img src={mediaUrl(summary.thumbnail)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          <img src={mediaUrl(summary.thumbnail)} alt="" />
         ) : (
-          <Film size={30} className="empty-icon" />
-        )}
-        {summary.duration != null && (
-          <span className="chip" style={{ position: 'absolute', right: 8, bottom: 8, background: 'rgba(6,8,12,0.78)' }}>
-            <Clock size={11} /> {formatClock(summary.duration)}
-          </span>
+          <Film size={18} strokeWidth={1.5} />
         )}
       </div>
-      <div style={{ padding: '12px 14px 14px' }}>
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <strong style={{ fontSize: 13.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{summary.name}</strong>
-          <ChevronRight size={15} className="muted" />
-        </div>
-        <div className="row wrap" style={{ marginTop: 8, gap: 6 }}>
-          <StatusChip status={summary.status} />
-          {summary.candidateCount > 0 && <span className="chip">{summary.candidateCount} moments</span>}
-          {summary.clipCount > 0 && <span className="chip accent">{summary.clipCount} clips</span>}
-          {!summary.hasAudio && <span className="chip warn">no audio</span>}
+
+      <div style={{ minWidth: 0 }}>
+        {renaming ? (
+          <input
+            className="input"
+            autoFocus
+            value={renameValue}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void doRename()
+              if (e.key === 'Escape') setRenaming(false)
+            }}
+            onBlur={() => void doRename()}
+            style={{ maxWidth: 380 }}
+          />
+        ) : (
+          <div className="project-name" title={summary.name}>{summary.name}</div>
+        )}
+        <div className="project-meta">
+          {summary.duration != null && (
+            <>
+              <span className="mono">{formatClock(summary.duration)}</span>
+              <span className="sep">·</span>
+            </>
+          )}
+          <span>{summary.clipCount} clips</span>
+          <span className="sep">·</span>
+          <span>{summary.candidateCount} moments</span>
+          <span className="sep">·</span>
+          <span>edited {formatRelative(summary.updatedAt)}</span>
+          {!summary.hasAudio && (
+            <>
+              <span className="sep">·</span>
+              <span className="chip warn">no audio</span>
+            </>
+          )}
         </div>
       </div>
-    </button>
+
+      <div className="project-side">
+        <StatusChip status={summary.status} />
+        <div className="menu-wrap" ref={menuRef}>
+          <button
+            className="btn ghost sm icon"
+            aria-label="Project actions"
+            onClick={(e) => {
+              e.stopPropagation()
+              setMenuOpen(!menuOpen)
+            }}
+          >
+            <MoreHorizontal size={14} />
+          </button>
+          {menuOpen && (
+            <>
+              <div style={{ position: 'fixed', inset: 0, zIndex: 50 }} onClick={() => setMenuOpen(false)} />
+              <div className="menu">
+                <button onClick={() => app.openProject(summary.id)}>
+                  <FolderOpen size={13} /> Open
+                </button>
+                <button onClick={() => { setMenuOpen(false); setRenameValue(summary.name); setRenaming(true) }}>
+                  <Pencil size={13} /> Rename
+                </button>
+                <div className="menu-sep" />
+                <button className="danger" onClick={() => { setMenuOpen(false); setConfirmDelete(true) }}>
+                  <Trash2 size={13} /> Delete…
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {confirmDelete && (
+        <Modal
+          title="Delete project?"
+          onClose={() => setConfirmDelete(false)}
+          footer={
+            <>
+              <button className="btn" onClick={() => setConfirmDelete(false)}>Cancel</button>
+              <button className="btn danger" onClick={() => void doDelete()}>
+                <Trash2 size={13} /> Delete permanently
+              </button>
+            </>
+          }
+        >
+          <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+            <strong>“{summary.name}”</strong> and all of its imported media, transcripts, clips and renders will be removed from
+            the workspace. Files already exported to the exports folder are kept.
+          </div>
+          <div className="field-hint">This cannot be undone.</div>
+        </Modal>
+      )}
+    </div>
   )
 }
 
+const STATUS_MAP: Record<string, { cls: string; label: string }> = {
+  created: { cls: '', label: 'Empty' },
+  importing: { cls: 'working', label: 'Importing' },
+  import_failed: { cls: 'danger', label: 'Import failed' },
+  ready: { cls: '', label: 'Ready' },
+  transcribing: { cls: 'working', label: 'Transcribing' },
+  transcription_failed: { cls: 'danger', label: 'Transcription failed' },
+  transcribed: { cls: '', label: 'Transcribed' },
+  analyzing: { cls: 'working', label: 'Analyzing' },
+  analysis_failed: { cls: 'danger', label: 'Analysis failed' },
+  analyzed: { cls: '', label: 'Analyzed' }
+}
+
 export function StatusChip({ status, message }: { status: string; message?: string | null }) {
-  const map: Record<string, { cls: string; label: string }> = {
-    created: { cls: '', label: 'Empty project' },
-    importing: { cls: 'accent', label: 'Importing…' },
-    import_failed: { cls: 'danger', label: 'Import failed' },
-    ready: { cls: 'success', label: 'Ready' },
-    transcribing: { cls: 'accent', label: 'Transcribing…' },
-    transcription_failed: { cls: 'danger', label: 'Transcription failed' },
-    transcribed: { cls: 'success', label: 'Transcribed' },
-    analyzing: { cls: 'accent', label: 'Analyzing…' },
-    analysis_failed: { cls: 'danger', label: 'Analysis failed' },
-    analyzed: { cls: 'success', label: 'Analyzed' }
-  }
-  const entry = map[status] ?? { cls: '', label: status }
+  const entry = STATUS_MAP[status] ?? { cls: '', label: status }
   return (
-    <span className={`chip ${entry.cls}`} title={message ?? undefined}>
+    <span className={`status ${entry.cls}`} title={message ?? undefined}>
+      <span className="dot" />
       {entry.label}
     </span>
   )

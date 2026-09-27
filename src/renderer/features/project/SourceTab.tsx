@@ -60,7 +60,7 @@ export function SourceTab() {
   return (
     <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 1.7fr) minmax(280px, 1fr)', alignItems: 'start' }}>
       <div className="stack">
-        <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+        <div className="panel flush">
           {project.sourcePath && project.status !== 'importing' ? (
             <video
               key={project.sourcePath}
@@ -88,8 +88,8 @@ export function SourceTab() {
           )}
         </div>
 
-        <div className="card">
-          <div className="card-title">Import media</div>
+        <div className="panel">
+          <div className="section-title">Import media</div>
           <div className="row wrap">
             <button className="btn" onClick={() => void importFile()} disabled={importing}>
               <Film size={15} /> From file…
@@ -114,9 +114,9 @@ export function SourceTab() {
         </div>
       </div>
 
-      <div className="stack">
-        <div className="card">
-          <div className="card-title">Source information</div>
+      <div className="stack" style={{ gap: 0 }}>
+        <div className="section">
+          <div className="section-title">Source information</div>
           {project.status === 'created' ? (
             <div className="muted" style={{ fontSize: 13 }}>Import media to see duration, resolution, codecs and audio status.</div>
           ) : (
@@ -135,8 +135,8 @@ export function SourceTab() {
           )}
         </div>
 
-        <div className="card">
-          <div className="card-title">Discovery settings</div>
+        <div className="section">
+          <div className="section-title">Discovery settings</div>
           <Field label="Target clip duration" hint="Applied when analyzing. Candidates outside the window (±35%) are rejected.">
             <select
               className="select"
@@ -165,8 +165,8 @@ export function SourceTab() {
         </div>
 
         {data.storage && (
-          <div className="card">
-            <div className="card-title">
+          <div className="section">
+            <div className="section-title">
               <span className="row">
                 <HardDrive size={13} /> Project storage
               </span>
@@ -191,9 +191,11 @@ export function SourceTab() {
           </div>
         )}
 
-        <button className="btn danger" onClick={() => setConfirmDelete(true)}>
-          <Trash2 size={14} /> Delete project…
-        </button>
+        <div className="section">
+          <button className="btn danger sm" onClick={() => setConfirmDelete(true)}>
+            <Trash2 size={13} /> Delete project…
+          </button>
+        </div>
       </div>
 
       {confirmDelete && (

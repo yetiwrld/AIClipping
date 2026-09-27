@@ -43,8 +43,8 @@ export function SettingsPage() {
         </div>
       </div>
 
-      <div className="grid" style={{ gridTemplateColumns: '210px minmax(0, 1fr)', alignItems: 'start' }}>
-        <div className="card" style={{ padding: 8 }}>
+      <div className="settings-layout">
+        <div className="settings-nav">
           {sections.map((s) => (
             <button
               key={s.id}
@@ -57,7 +57,7 @@ export function SettingsPage() {
           ))}
         </div>
 
-        <div className="stack">
+        <div className="settings-content stack">
           {section === 'ai' && <AiSection />}
           {section === 'transcription' && <TranscriptionSection />}
           {section === 'video' && <VideoSection />}
@@ -121,8 +121,8 @@ function AiSection() {
 
   return (
     <>
-      <div className="card">
-        <div className="card-title">Analysis provider</div>
+      <div className="settings-section">
+        <div className="section-title">Analysis provider</div>
         <div className="field">
           <select
             className="select"
@@ -175,9 +175,9 @@ function AiSection() {
         testResult={testResult['anthropic']}
       />
 
-      <div className="card">
+      <div className="settings-section">
         <div className="row">
-          <ShieldCheck size={15} color="var(--success)" />
+          <ShieldCheck size={14} color="var(--success)" />
           <strong style={{ fontSize: 13 }}>Privacy — exactly what leaves this machine</strong>
         </div>
         <div className="field-hint" style={{ lineHeight: 1.7, marginTop: 6 }}>
@@ -209,9 +209,9 @@ function ProviderForm(props: {
 }) {
   const [local, setLocal] = useState(props.config)
   return (
-    <div className="card stack">
+    <div className="settings-section stack">
       <div className="row">
-        <div className="card-title" style={{ marginBottom: 0 }}>{props.title}</div>
+        <div className="section-title" style={{ marginBottom: 0 }}>{props.title}</div>
         <span style={{ flex: 1 }} />
         {props.hint && <span className="chip" title="Stored API key (masked)"><KeyRound size={11} /> {props.hint}</span>}
       </div>
@@ -288,8 +288,8 @@ function TranscriptionSection() {
   const local = app.dependencies.find((d) => d.id === 'faster-whisper-local')
 
   return (
-    <div className="card stack">
-      <div className="card-title">Transcription</div>
+    <div className="settings-section stack">
+      <div className="section-title">Transcription</div>
       <Field label="Default provider">
         <select className="select" value={t.providerId} onChange={(e) => void app.saveSettings({ transcription: { providerId: e.target.value } })}>
           <option value="import-file">Import transcript file (offline)</option>
@@ -318,7 +318,7 @@ function TranscriptionSection() {
         </Field>
       </div>
       <div className="dep-row">
-        <span style={{ color: local?.available ? 'var(--success)' : 'var(--warn)' }}>{local?.available ? '✓' : '!'}</span>
+        <span className={`status ${local?.available ? 'success' : 'warn'}`}><span className="dot" /></span>
         <span className="dep-msg">{local?.message ?? 'Checking…'}</span>
       </div>
     </div>
@@ -332,8 +332,8 @@ function VideoSection() {
   const settings = app.settings!
   const v = settings.video
   return (
-    <div className="card stack">
-      <div className="card-title">Video & rendering</div>
+    <div className="settings-section stack">
+      <div className="section-title">Video & rendering</div>
       <Field label="Default discovery duration preset">
         <select className="select" value={v.targetDurationPreset} onChange={(e) => void app.saveSettings({ video: { targetDurationPreset: e.target.value } })}>
           <option value="short">Short · 15–30s</option>
@@ -382,8 +382,8 @@ function CaptionsSection() {
   const app = useAppStore()
   const settings = app.settings!
   return (
-    <div className="card stack">
-      <div className="card-title">Captions</div>
+    <div className="settings-section stack">
+      <div className="section-title">Captions</div>
       <Field label="Default caption style for new clips">
         <select className="select" value={settings.captions.defaultStyleId} onChange={(e) => void app.saveSettings({ captions: { defaultStyleId: e.target.value } })}>
           {CAPTION_STYLES.map((s) => (
@@ -405,8 +405,8 @@ function ExportSection() {
   const app = useAppStore()
   const settings = app.settings!
   return (
-    <div className="card stack">
-      <div className="card-title">Export</div>
+    <div className="settings-section stack">
+      <div className="section-title">Export</div>
       <Field label="Platform preset" hint="Controls metadata generation targets and export defaults.">
         <select className="select" value={settings.export.preset} onChange={(e) => void app.saveSettings({ export: { preset: e.target.value } })}>
           <option value="generic">Generic Vertical</option>
@@ -436,8 +436,8 @@ function StorageSection() {
 
   return (
     <>
-      <div className="card stack">
-        <div className="card-title">Storage & privacy</div>
+      <div className="settings-section stack">
+        <div className="section-title">Storage & privacy</div>
         <div className="tiny">Workspace root</div>
         <div className="mono" style={{ wordBreak: 'break-all' }}>{app.appInfo?.workspaceRoot}</div>
         {diag?.disk && (
@@ -460,8 +460,8 @@ function StorageSection() {
         )}
       </div>
 
-      <div className="card stack">
-        <div className="card-title">Diagnostics export</div>
+      <div className="settings-section stack">
+        <div className="section-title">Diagnostics export</div>
         <div className="field-hint">
           A JSON report with app version, OS, enabled providers, FFmpeg version, schema version, recent error codes and
           non-sensitive configuration. <strong>Never includes API keys.</strong>
@@ -498,8 +498,8 @@ function AdvancedSection() {
   const ffprobe = deps.find((d) => d.id === 'ffprobe')
 
   return (
-    <div className="card stack">
-      <div className="card-title">Advanced</div>
+    <div className="settings-section stack">
+      <div className="section-title">Advanced</div>
       <Field label="FFmpeg path override" hint="Blank = auto-detect (system PATH, then the bundled binary).">
         <input className="input mono" defaultValue={settings.advanced.ffmpegPath} placeholder={ffmpeg?.available ? `auto: ${ffmpeg.message}` : 'not detected'} onBlur={(e) => void app.saveSettings({ advanced: { ffmpegPath: e.target.value } })} />
       </Field>
@@ -515,10 +515,10 @@ function AdvancedSection() {
         </select>
       </Field>
       <div className="divider" />
-      <div className="card-title">Dependency status</div>
+      <div className="section-title">Dependency status</div>
       {deps.map((d) => (
         <div className="dep-row" key={d.id}>
-          <span style={{ color: d.available ? 'var(--success)' : 'var(--danger)' }}>{d.available ? '✓' : '✕'}</span>
+          <span className={`status ${d.available ? 'success' : 'danger'}`}><span className="dot" /></span>
           <span className="dep-name">{d.label}</span>
           <span className="dep-msg">{d.message}{d.version ? ` (v${d.version})` : ''}</span>
           {!d.available && d.fixHint && <span className="chip warn">{d.fixHint}</span>}

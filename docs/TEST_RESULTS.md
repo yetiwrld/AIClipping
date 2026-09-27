@@ -145,3 +145,29 @@ Tests       134 passed (134)
 - Local Whisper cannot be exercised in the sandbox (model downloads
   blocked); its provider availability probe reports this honestly and the
   import-file + cloud paths are covered instead.
+
+
+---
+
+## Redesign verification (2026-09-27, session 2)
+
+**Scope**: full renderer redesign (design system + all screens) plus two
+backend robustness fixes found during live verification. No test-suite
+behavioral coverage existed for visuals, so verification = typecheck + build +
+134-test suite + live preview-server exercise of every API the new UI calls.
+
+| Check | Result |
+| --- | --- |
+| `npm run typecheck` (node + web, strict) | clean |
+| `npx electron-vite build` | clean (renderer 1921 modules, CSS 36.9 kB) |
+| `npx vitest run` | **134/134** (96 unit + 38 integration) |
+| CSS class audit | every class referenced in TSX resolves in `global.css` |
+| Decoration audit | zero `Sparkles`, gradients, backdrop-filter, glow, emoji, purple remnants in `src/renderer` |
+| Live E2E via preview bridge | create → import (1280×720) → transcript (19 seg) → heuristic analyze (3 candidates, real titles) → clip → **render completed** → delete; workspace left clean |
+| B-008 repro (delete during import) | process survives; task `failed / PROJECT_DELETED`; recovery-on-restart unaffected |
+| Fixture regeneration | `npm run fixtures` — 149 words / 19 segments, segment text now real (was `"undefined …"`) |
+
+**Known**: B-009 (rare unhandled rejection in parallel test teardown, infra
+race, non-blocking). **Not automatable here**: pixel-level screenshots (no
+browser binaries in sandbox) — final visual sign-off happens in the Windows
+run book alongside the existing manual checks.

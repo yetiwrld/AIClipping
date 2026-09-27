@@ -1,10 +1,9 @@
 import React, { useEffect } from 'react'
-import { ListVideo, RotateCcw, X, History, Trash2 } from 'lucide-react'
+import { RotateCcw, History, Trash2, X } from 'lucide-react'
 import { api, errMessage } from '../../api/client'
 import { useAppStore } from '../../stores/app'
 import { useDataStore } from '../../stores/data'
 import { RenderList } from '../project/RendersTab'
-import { formatClock } from '@shared/utils/time'
 
 /**
  * Global queue view: renders across projects + the task/recovery list.
@@ -67,55 +66,67 @@ export function QueuePage() {
       </div>
 
       {interrupted.length > 0 && (
-        <div className="card" style={{ marginBottom: 18, borderColor: 'rgba(229,161,63,0.4)' }}>
-          <div className="row" style={{ marginBottom: 8 }}>
-            <History size={15} color="var(--warn)" />
-            <strong style={{ fontSize: 13.5 }}>Interrupted processing detected</strong>
+        <div className="queue-group">
+          <div className="queue-group-title" style={{ color: 'var(--warn)' }}>
+            <History size={12} /> Interrupted processing · {interrupted.length}
           </div>
-          <div className="field-hint" style={{ marginBottom: 10 }}>
+          <div className="tiny" style={{ padding: '6px 6px 8px', maxWidth: 560 }}>
             These operations were in flight when the application last closed. Nothing was corrupted — choose whether to run them
             again.
           </div>
           {interrupted.map((t) => (
-            <div className="row" key={t.id} style={{ padding: '7px 0', borderTop: '1px solid var(--border-1)' }}>
-              <span className="chip warn">{t.type}</span>
-              <span style={{ fontSize: 13 }}>{projectById.get(t.projectId ?? '') ?? t.projectId?.slice(0, 8) ?? '—'}</span>
-              <span className="tiny">{t.message ?? ''}</span>
-              <span style={{ flex: 1 }} />
-              <button className="btn sm primary" onClick={() => void resume(t.id)}>
-                <RotateCcw size={12} /> Run again
-              </button>
-              <button className="btn sm" onClick={() => void discard(t.id)}>
-                <Trash2 size={12} /> Discard
-              </button>
+            <div className="queue-row" key={t.id}>
+              <div style={{ minWidth: 0 }}>
+                <div className="q-title">{projectById.get(t.projectId ?? '') ?? t.projectId?.slice(0, 8) ?? '—'}</div>
+                <div className="tiny">{t.type}</div>
+              </div>
+              <div className="q-meta tiny">{t.message ?? ''}</div>
+              <div />
+              <div className="q-actions">
+                <button className="btn sm primary" onClick={() => void resume(t.id)}>
+                  <RotateCcw size={12} /> Run again
+                </button>
+                <button className="btn sm" onClick={() => void discard(t.id)}>
+                  <Trash2 size={12} /> Discard
+                </button>
+              </div>
             </div>
           ))}
         </div>
       )}
 
       {running.length > 0 && (
-        <div className="card" style={{ marginBottom: 18 }}>
-          <div className="card-title">Active now</div>
+        <div className="queue-group">
+          <div className="queue-group-title">Active now</div>
           {running.map((t) => (
-            <div className="row" key={t.id} style={{ padding: '7px 0', borderTop: '1px solid var(--border-1)' }}>
-              <span className="chip accent">{t.type}</span>
-              <span style={{ fontSize: 13, flex: 1 }}>{t.message ?? t.stage ?? 'Working…'}</span>
-              <span className="tiny">{t.progress != null ? `${Math.round(t.progress * 100)}%` : ''}</span>
-              <button className="btn sm" onClick={() => void cancel(t.id)}>
-                <X size={12} /> Cancel
-              </button>
+            <div className="queue-row" key={t.id}>
+              <div style={{ minWidth: 0 }}>
+                <div className="q-title">{t.type}</div>
+                <div className="tiny">{projectById.get(t.projectId ?? '') ?? '—'}</div>
+              </div>
+              <div className="q-meta tiny">
+                <span className="status working"><span className="dot" /> {t.message ?? t.stage ?? 'Working…'}</span>
+              </div>
+              <div className="tiny" style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                {t.progress != null ? `${Math.round(t.progress * 100)}%` : ''}
+              </div>
+              <div className="q-actions">
+                <button className="btn sm" onClick={() => void cancel(t.id)}>
+                  <X size={12} /> Cancel
+                </button>
+              </div>
             </div>
           ))}
         </div>
       )}
 
-      <div style={{ marginBottom: 18 }}>
+      <div style={{ marginBottom: 20 }}>
         <RenderList />
       </div>
 
       {history.length > 0 && (
-        <div className="card">
-          <div className="card-title">Recent operations</div>
+        <div className="queue-group">
+          <div className="queue-group-title">Recent operations</div>
           <table className="table">
             <thead>
               <tr>
@@ -132,7 +143,9 @@ export function QueuePage() {
                   <td>{t.type}</td>
                   <td>{projectById.get(t.projectId ?? '') ?? '—'}</td>
                   <td>
-                    <span className={`chip ${t.state === 'completed' ? 'success' : t.state === 'failed' ? 'danger' : ''}`}>{t.state}</span>
+                    <span className={`status ${t.state === 'completed' ? 'success' : t.state === 'failed' ? 'danger' : 'warn'}`}>
+                      <span className="dot" /> {t.state}
+                    </span>
                   </td>
                   <td className="tiny" style={{ maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {t.error?.message ?? t.message ?? '—'}
@@ -142,18 +155,6 @@ export function QueuePage() {
               ))}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {data.renders.length === 0 && running.length === 0 && (
-        <div className="card">
-          <div className="empty">
-            <ListVideo size={36} className="empty-icon" />
-            <strong>Queue is empty</strong>
-            <span className="muted" style={{ fontSize: 13 }}>
-              Renders you queue from the editor or clip cards appear here with live progress.
-            </span>
-          </div>
         </div>
       )}
     </div>

@@ -23,8 +23,8 @@ export function Modal(props: {
           <div className="modal-title">{props.title}</div>
           <div className="header-spacer" />
           {props.onClose && (
-            <button className="btn ghost sm" onClick={props.onClose} aria-label="Close dialog">
-              <X size={15} />
+            <button className="btn ghost sm icon" onClick={props.onClose} aria-label="Close dialog">
+              <X size={14} />
             </button>
           )}
         </div>
@@ -49,7 +49,7 @@ export function ErrorBox(props: { error: unknown; onRetry?: () => void; retryLab
   return (
     <div className="error-box" role="alert">
       <div className="error-title">
-        <AlertTriangle size={13} style={{ verticalAlign: -2, marginRight: 5 }} />
+        <AlertTriangle size={12} style={{ verticalAlign: -1, marginRight: 5 }} />
         {message}
       </div>
       {hint && <div className="error-hint">{hint}</div>}
@@ -60,7 +60,7 @@ export function ErrorBox(props: { error: unknown; onRetry?: () => void; retryLab
         </details>
       )}
       {props.onRetry && (
-        <div style={{ marginTop: 9 }}>
+        <div style={{ marginTop: 8 }}>
           <button className="btn sm" onClick={props.onRetry}>
             {props.retryLabel ?? 'Retry'}
           </button>
@@ -71,33 +71,47 @@ export function ErrorBox(props: { error: unknown; onRetry?: () => void; retryLab
   )
 }
 
+/**
+ * Score color: mostly neutral. Strong scores use the accent; weak ones get
+ * semantic warnings. Mid-range stays deliberately quiet.
+ */
 export function scoreColor(score: number | null | undefined): string {
   if (score == null) return 'var(--text-3)'
-  if (score >= 75) return 'var(--success)'
-  if (score >= 50) return 'var(--accent)'
-  if (score >= 35) return 'var(--warn)'
+  if (score >= 75) return 'var(--accent)'
+  if (score >= 35) return 'var(--text-2)'
   return 'var(--danger)'
 }
 
-export function ScoreRing(props: { score: number | null; size?: number; label?: string }) {
-  const pct = props.score ?? 0
+/** Compact analytical score value — "86 / 100" — no ring, no gauge. */
+export function ScoreValue(props: { score: number | null; size?: 'sm' | 'lg'; label?: string }) {
+  const s = props.score
   return (
-    <div
-      className="score-ring"
-      style={{ ['--pct' as string]: pct, ['--size' as string]: `${props.size ?? 46}px`, ['--ring-color' as string]: scoreColor(props.score) }}
-      title={props.label ?? (props.score != null ? `Overall estimate: ${props.score}/100` : 'Not scored yet')}
+    <span
+      className="audit-value"
+      style={{
+        fontSize: props.size === 'lg' ? 22 : 15,
+        color: scoreColor(s),
+        fontWeight: 600
+      }}
+      title={props.label ?? (s != null ? `Overall estimate: ${s}/100` : 'Not scored yet')}
     >
-      <span>{props.score != null ? pct : '–'}</span>
-    </div>
+      {s != null ? s : '–'}
+      <span className="audit-max">/100</span>
+    </span>
   )
+}
+
+/** Legacy name kept so existing imports resolve; renders the analytical value. */
+export function ScoreRing(props: { score: number | null; size?: number; label?: string }) {
+  return <ScoreValue score={props.score} label={props.label} />
 }
 
 export function EmptyState(props: { icon: React.ReactNode; title: string; hint?: string; action?: React.ReactNode }) {
   return (
     <div className="empty">
       <div className="empty-icon">{props.icon}</div>
-      <div style={{ fontWeight: 650, fontSize: 15 }}>{props.title}</div>
-      {props.hint && <div className="muted" style={{ maxWidth: 420, fontSize: 13 }}>{props.hint}</div>}
+      <div style={{ fontWeight: 600, fontSize: 13.5 }}>{props.title}</div>
+      {props.hint && <div className="muted" style={{ maxWidth: 400, fontSize: 12.5, lineHeight: 1.55 }}>{props.hint}</div>}
       {props.action}
     </div>
   )
@@ -117,7 +131,7 @@ export function Switch(props: { checked: boolean; onChange: (v: boolean) => void
   return (
     <div className="switch-row">
       <div>
-        <div style={{ fontSize: 13, fontWeight: 550 }}>{props.label}</div>
+        <div style={{ fontSize: 12.5, fontWeight: 550 }}>{props.label}</div>
         {props.hint && <div className="field-hint">{props.hint}</div>}
       </div>
       <button
@@ -133,13 +147,13 @@ export function Switch(props: { checked: boolean; onChange: (v: boolean) => void
 }
 
 export function ToastIcon({ level }: { level: 'info' | 'success' | 'warn' | 'error' }) {
-  if (level === 'success') return <CheckCircle2 size={15} color="var(--success)" />
-  if (level === 'error') return <XCircle size={15} color="var(--danger)" />
-  if (level === 'warn') return <AlertTriangle size={15} color="var(--warn)" />
-  return <Info size={15} color="var(--accent)" />
+  if (level === 'success') return <CheckCircle2 size={14} color="var(--success)" />
+  if (level === 'error') return <XCircle size={14} color="var(--danger)" />
+  if (level === 'warn') return <AlertTriangle size={14} color="var(--warn)" />
+  return <Info size={14} color="var(--accent)" />
 }
 
-export function Spinner({ size = 14 }: { size?: number }) {
+export function Spinner({ size = 13 }: { size?: number }) {
   return (
     <svg className="spin" width={size} height={size} viewBox="0 0 24 24" fill="none" aria-label="Loading">
       <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
@@ -158,4 +172,16 @@ export function formatBytes(bytes: number): string {
     i++
   }
   return `${v.toFixed(v >= 100 || i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+/** "2h ago" / "3d ago" — for compact last-modified display. */
+export function formatRelative(iso: string): string {
+  const t = Date.parse(iso)
+  if (!Number.isFinite(t)) return ''
+  const s = Math.max(0, (Date.now() - t) / 1000)
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`
+  if (s < 86400 * 30) return `${Math.floor(s / 86400)}d ago`
+  return new Date(t).toLocaleDateString()
 }

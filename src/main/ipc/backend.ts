@@ -46,6 +46,10 @@ const TRANSCRIPT_FILTERS = [{ name: 'Transcripts', extensions: ['srt', 'vtt', 'j
 
 export function createBackend(ctx: AppContext, host: HostServices | null): Backend {
   const tasks = new TaskManager(ctx)
+/** Fire-and-forget task dispatch: failures are recorded on the task row; the rethrow is swallowed so a failed background task can never crash the host (B-008). */
+function runTask(taskId: string, fn: (report: import('../services/tasks/index').TaskReporter, signal: AbortSignal) => Promise<unknown>): void {
+  void tasks.run(taskId, fn).catch(() => undefined)
+}
   const renders = new RenderQueue(ctx)
 
   // ------------------------------------------------------------- runners ---
@@ -103,7 +107,7 @@ export function createBackend(ctx: AppContext, host: HostServices | null): Backe
         if (!filePath) throw new AppError('CANCELLED', 'No file was selected.')
       }
       const task = tasks.create('download', p.projectId, { kind: 'file', projectId: p.projectId, filePath })
-      void tasks.run(task.id, (report) => {
+      runTask(task.id, (report) => {
         report('copying', null, 'Importing file')
         return importMediaFile(ctx, p.projectId, filePath as string)
       })
@@ -111,7 +115,7 @@ export function createBackend(ctx: AppContext, host: HostServices | null): Backe
     },
     'media.importUrl': (p: { projectId: string; url: string }): { taskId: string } => {
       const task = tasks.create('download', p.projectId, { kind: 'url', projectId: p.projectId, url: p.url })
-      void tasks.run(task.id, async (report) => {
+      runTask(task.id, async (report) => {
         report('downloading', null, 'Starting download')
         await importMediaUrl(ctx, p.projectId, p.url)
       })
@@ -129,7 +133,7 @@ export function createBackend(ctx: AppContext, host: HostServices | null): Backe
     'transcript.get': (p: { projectId: string }) => getTranscript(ctx, p.projectId),
     'transcript.start': (p: { projectId: string; providerId: 'faster-whisper-local' | 'openai-compatible' }): { taskId: string } => {
       const task = tasks.create('transcribe', p.projectId, { projectId: p.projectId, providerId: p.providerId })
-      void tasks.run(task.id, (report, signal) =>
+      runTask(task.id, (report, signal) =>
         runTranscription(ctx, {
           projectId: p.projectId,
           providerId: p.providerId,
@@ -147,7 +151,7 @@ export function createBackend(ctx: AppContext, host: HostServices | null): Backe
     'analysis.providers': () => listAnalysisProviders(ctx),
     'analysis.start': (p: { projectId: string; providerId: 'heuristic-local' | 'openai-compatible' | 'anthropic' }): { taskId: string } => {
       const task = tasks.create('analyze', p.projectId, { projectId: p.projectId, providerId: p.providerId })
-      void tasks.run(task.id, (report, signal) =>
+      runTask(task.id, (report, signal) =>
         runAnalysis(ctx, {
           projectId: p.projectId,
           providerId: p.providerId,

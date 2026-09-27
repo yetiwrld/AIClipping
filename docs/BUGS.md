@@ -52,3 +52,37 @@ Format: symptom → cause → fix → regression test.
 - `formatClock` did not roll hours (`3600 → "60:00"`); now `1:00:00`.
 - `sanitizeFilename` did not strip DEL (0x7f); now treated as illegal.
 - Both covered by unit tests.
+
+## B-008 — deleting a project mid-import crashed the backend
+- **Symptom**: `projects.delete` while a `media.importFile` task was still in
+  flight killed the process: `TypeError: Cannot read properties of null
+  (reading 'id')` at `writeProjectJson` (repositories.ts) — the re-fetch after
+  the long copy returned null for the deleted project. Found while exercising
+  the redesigned dashboard's new row context menu (delete) via the preview API.
+- **Root cause (two layers)**:
+  1. `importMediaFile`/`importMediaUrl` cast the post-copy `projectsRepo.get`
+     result to `Project` without re-checking existence.
+  2. The IPC layer dispatches background tasks fire-and-forget
+     (`void tasks.run(...)`); `TaskManager.run` records the failure then
+     **rethrows**, producing an unhandled promise rejection that terminates
+     the host. Any failing background task could crash the app this way.
+- **Fix**: (1) both import paths now re-check the project and fail with a
+  structured `PROJECT_DELETED` AppError; (2) `backend.ts` dispatches through a
+  `runTask()` helper that swallows the rethrow — task failure state is already
+  persisted on the task row and emitted via events. `TaskManager.resume()`
+  still awaits `run()` directly, so user-initiated retries keep their errors.
+- **Verified**: exact repro (create → queue import → delete immediately)
+  against the live preview server: process stays alive, task row records
+  `failed / PROJECT_DELETED / "This project was deleted during import."`,
+  recovery-on-restart unaffected. Full suite remains 134/134.
+
+## B-009 — intermittent unhandled rejection in test teardown (open, infra-only)
+- **Symptom**: rarely, a full parallel `vitest run` reports one unhandled
+  rejection: `ENOENT mkdir /tmp/clipwright-test-*/database` from
+  `AppDatabase.persistNow`, attributed to `ai-provider.test.ts`.
+- **Cause**: the DB's unref'd 250 ms flush timer can fire while the worker's
+  temp workspace is being removed; `cleanup()` awaits `ctx.shutdown()` first,
+  so this is a narrow scheduling race under load, not app logic (the real
+  shutdown path logs `database persisted` reliably).
+- **Status**: open, non-blocking (tests 134/134, exit code 0). Revisit if it
+  flakes CI.

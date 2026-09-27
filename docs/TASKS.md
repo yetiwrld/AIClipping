@@ -106,3 +106,13 @@ Living task journal. Phases reference `DEVELOPMENT_PLAN.md`.
       (ADR-013) / CHANGELOG
 - [ ] Windows 11 manual run book (docs/TEST_RESULTS.md §Manual) — requires a
       real Windows machine; script and checklist are ready
+
+
+## Phase 12 — Professional UI redesign (session 2) — DONE
+- [x] Design-system rewrite of `global.css` (tokens, components, legacy aliases)
+- [x] Shell/sidebar, dashboard rows + context menu, project workspace tabs/stepper
+- [x] Moments analytical list, clips asset rows, editor workspace (stage/inspector/timeline/transport), grouped queue, settings sections
+- [x] Consistency pass: no sparkles/gradients/glow/emoji; icon-only buttons labeled; loading states name real operations
+- [x] B-008 fix (delete-during-import crash + fire-and-forget task containment)
+- [x] Docs: ADR-014, B-008/B-009, CHANGELOG, TEST_RESULTS
+- [ ] Windows manual visual pass (fold into the existing run book §Manual)

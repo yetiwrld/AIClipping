@@ -4,7 +4,7 @@ import { api, errMessage, isElectron, copyText, mediaUrl } from '../../api/clien
 import { pickUpload } from '../../api/upload'
 import { useAppStore } from '../../stores/app'
 import { useDataStore } from '../../stores/data'
-import { EmptyState, ErrorBox, Spinner } from '../../components/ui'
+import { ErrorBox, Spinner } from '../../components/ui'
 import { formatClock } from '@shared/utils/time'
 
 /**
@@ -112,7 +112,7 @@ export function TranscriptTab() {
 
   return (
     <div className="stack">
-      <div className="card pad-sm">
+      <div className="toolbar" style={{ borderBottom: 'none', paddingBottom: 0, marginBottom: 10 }}>
         <div className="row wrap">
           <div className="row" style={{ flex: 1, minWidth: 200 }}>
             <Search size={14} className="muted" />
@@ -158,20 +158,18 @@ export function TranscriptTab() {
       {error ? <ErrorBox error={error} onRetry={() => setError(null)} retryLabel="Dismiss" /> : null}
 
       {data.transcript.length === 0 && !transcribing ? (
-        <div className="card">
-          <EmptyState
-            icon={<FileText size={38} className="empty-icon" />}
-            title={project.hasAudio ? 'No transcript yet' : 'This video has no audio track'}
-            hint={
-              project.hasAudio
-                ? 'Transcribe the video (locally with Whisper, or via your cloud provider), or import an existing SRT/VTT/JSON transcript. Every later step — moment discovery, captions, editing — works from this transcript.'
-                : 'Speech transcription needs audio. You can still import an existing transcript file to continue the workflow.'
-            }
-          />
+        <div className="empty" style={{ padding: '72px 20px' }}>
+          <FileText size={28} className="empty-icon" />
+          <div style={{ fontWeight: 600, fontSize: 13.5 }}>{project.hasAudio ? 'No transcript yet' : 'This video has no audio track'}</div>
+          <div className="muted" style={{ maxWidth: 420, fontSize: 12.5, lineHeight: 1.55 }}>
+            {project.hasAudio
+              ? 'Transcribe the video (locally with Whisper, or via your cloud provider), or import an existing SRT/VTT/JSON transcript. Moment discovery, captions and editing all work from this transcript.'
+              : 'Speech transcription needs audio. You can still import an existing transcript file to continue the workflow.'}
+          </div>
         </div>
       ) : (
         <div className="grid" style={{ gridTemplateColumns: 'minmax(260px, 380px) minmax(0, 1fr)', alignItems: 'start' }}>
-          <div className="card" style={{ padding: 10, position: 'sticky', top: 0 }}>
+          <div className="panel" style={{ padding: 10, position: 'sticky', top: 0 }}>
             <video
               ref={videoRef}
               src={project.sourcePath ? mediaUrl(project.sourcePath) : undefined}
@@ -187,7 +185,7 @@ export function TranscriptTab() {
             </div>
           </div>
 
-          <div className="card" ref={listRef} style={{ maxHeight: '62vh', overflowY: 'auto', padding: '10px 6px' }}>
+          <div className="panel" ref={listRef} style={{ maxHeight: '64vh', overflowY: 'auto', padding: '10px 6px' }}>
             <div className="transcript-list">
               {filtered.map((seg) => (
                 <TranscriptRow
